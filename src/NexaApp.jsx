@@ -2184,4 +2184,527 @@ function JobsView({ currentUser, goTo, notify }) {
       <PageHeader
         title="الوظائف والخدمات"
         action={
-          <button className="header-add-btn" onClick={() => setCom…
+          <button className="header-add-btn" onClick={() => setComposerOpen(true)}>
+            <Plus size={16} /> طلب جديد
+          </button>
+        }
+      />
+
+      <div className="cat-scroll">
+        {types.map((t) => (
+          <button key={t} className={`cat-chip ${filter === t ? "active" : ""}`} onClick={() => setFilter(t)}>{t}</button>
+        ))}
+      </div>
+
+      {jobs === null && <div>{[1,2,3].map(i => <div key={i} className="job-card skel-block" style={{height: 90, marginBottom: 12}} />)}</div>}
+
+      {jobs && filtered.length === 0 && (
+        <EmptyState icon={Briefcase} title="لا توجد طلبات حاليًا" hint="كن أول من ينشر طلب وظيفة أو خدمة" />
+      )}
+
+      {filtered.map((j) => (
+        <div className="job-card" key={j.id} onClick={() => goTo("jobDetail", j.id)}>
+          <div className="job-card-top">
+            <span className={`job-type-pill jt-${j.jobType === "وظيفة" ? "job" : j.jobType === "خدمة مطلوبة" ? "svc" : "free"}`}>{j.jobType}</span>
+            <span className="job-time">{timeAgo(j.createdAt)}</span>
+          </div>
+          <h4 className="job-title">{j.title}</h4>
+          <p className="job-desc-preview">{j.description}</p>
+          <div className="job-card-bottom">
+            <span className="job-author"><Avatar user={usersCache[j.authorId]} size={20} /> {usersCache[j.authorId]?.fullName || "مستخدم"}</span>
+            {j.budget && <span className="job-budget"><DollarSign size={12} /> {j.budget}</span>}
+          </div>
+        </div>
+      ))}
+
+      {composerOpen && (
+        <JobComposer
+          currentUser={currentUser}
+          onClose={() => setComposerOpen(false)}
+          onCreated={() => { setComposerOpen(false); load(); notify("تم نشر طلبك بنجاح"); }}
+        />
+      )}
+    </div>
+  );
+}
+
+function JobComposer({ currentUser, onClose, onCreated }) {
+  const [jobType, setJobType] = useState("وظيفة");
+  const [title, setTitle] = useState("");
+  const [description, setDescription] = useState("");
+  const [budget, setBudget] = useState("");
+  const [location, setLocation] = useState("");
+  const [error, setError] = useState("");
+  const [posting, setPosting] = useState(false);
+
+  const submit = async () => {
+    if (!title.trim() || !description.trim()) { setError("اكتب العنوان والوصف على الأقل"); return; }
+    setPosting(true);
+    const id = uid("job");
+    const job = {
+      id, authorId: currentUser.id, jobType, title: title.trim(), description: description.trim(),
+      budget: budget.trim(), location: location.trim(), createdAt: Date.now(), applicants: [],
+    };
+    await dbSet(KEYS.job(id), job, true);
+    const idx = (await dbGet(KEYS.jobs, true)) || [];
+    idx.push(id);
+    await dbSet(KEYS.jobs, idx, true);
+    setPosting(false);
+    onCreated();
+  };
+
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal-sheet tall" onClick={(e) => e.stopPropagation()}>
+        <div className="modal-handle" />
+        <div className="modal-head">
+          <h3>طلب جديد</h3>
+          <button className="icon-btn" onClick={onClose}><X size={20} /></button>
+        </div>
+
+        <div className="composer-type-row">
+          {["وظيفة", "خدمة مطلوبة", "عمل حر"].map((t) => (
+            <button key={t} className={`type-chip ${jobType === t ? "active" : ""}`} onClick={() => setJobType(t)}>{t}</button>
+          ))}
+        </div>
+
+        <div className="field-group">
+          <label className="field-label">العنوان</label>
+          <input className="field-input" value={title} onChange={(e) => setTitle(e.target.value)} placeholder="مثال: مطلوب مصمم واجهات لمشروع تطبيق" />
+        </div>
+        <div className="field-group">
+          <label className="field-label">التفاصيل</label>
+          <textarea className="field-input" rows={4} value={description} onChange={(e) => setDescription(e.target.value)} placeholder="اشرح المطلوب بالتفصيل..." />
+        </div>
+        <div className="composer-product-fields">
+          <input className="field-input" placeholder="الميزانية (اختياري)" value={budget} onChange={(e) => setBudget(e.target.value)} />
+          <input className="field-input" placeholder="الموقع (اختياري)" value={location} onChange={(e) => setLocation(e.target.value)} />
+        </div>
+
+        {error && <div className="field-error"><AlertCircle size={14} /> {error}</div>}
+        <button className="btn-primary" style={{ marginTop: 14 }} onClick={submit} disabled={posting}>
+          {posting ? <Loader2 size={18} className="nx-spin" /> : "نشر الطلب"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function JobDetailView({ jobId, currentUser, goTo, notify }) {
+  const [job, setJob] = useState(null);
+  const [author, setAuthor] = useState(null);
+  const [applicants, setApplicants] = useState([]);
+  const [message, setMessage] = useState("");
+  const [applied, setApplied] = useState(false);
+  const [loading, setLoading] = useState(true);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    const j = await dbGet(KEYS.job(jobId), true);
+    setJob(j);
+    if (j) {
+      const a = await dbGet(KEYS.users(j.authorId), true);
+      setAuthor(a);
+      const apps = (await dbGet(KEYS.jobApps(jobId), true)) || [];
+      const appUsers = await Promise.all(apps.map(async (app) => ({ ...app, user: await dbGet(KEYS.users(app.userId), true) })));
+      setApplicants(appUsers);
+      setApplied(apps.some((app) => app.userId === currentUser.id));
+    }
+    setLoading(false);
+  }, [jobId, currentUser.id]);
+
+  useEffect(() => { load(); }, [load]);
+
+  const apply = async () => {
+    if (!message.trim()) { notify("اكتب رسالة قصيرة للتقديم", "error"); return; }
+    const apps = (await dbGet(KEYS.jobApps(jobId), true)) || [];
+    apps.push({ userId: currentUser.id, message: message.trim(), createdAt: Date.now() });
+    await dbSet(KEYS.jobApps(jobId), apps, true);
+    setMessage("");
+    notify("تم إرسال طلبك بنجاح");
+    load();
+  };
+
+  if (loading) return <div className="page-pad"><PageHeader title="تفاصيل الطلب" onBack={() => goTo("jobs")} /><div className="skel-block" style={{ height: 200 }} /></div>;
+  if (!job) return <div className="page-pad"><PageHeader title="تفاصيل الطلب" onBack={() => goTo("jobs")} /><EmptyState icon={Briefcase} title="هذا الطلب غير موجود" /></div>;
+
+  const isOwner = job.authorId === currentUser.id;
+
+  return (
+    <div className="page-pad">
+      <PageHeader title="تفاصيل الطلب" onBack={() => goTo("jobs")} />
+      <div className="job-detail-card">
+        <span className={`job-type-pill jt-${job.jobType === "وظيفة" ? "job" : job.jobType === "خدمة مطلوبة" ? "svc" : "free"}`}>{job.jobType}</span>
+        <h2 className="job-detail-title">{job.title}</h2>
+        <div className="job-detail-meta" onClick={() => goTo("userProfile", author?.id)}>
+          <Avatar user={author} size={32} />
+          <div>
+            <div className="job-author-name">{author?.fullName}</div>
+            <div className="job-time">{timeAgo(job.createdAt)}</div>
+          </div>
+        </div>
+        <p className="job-detail-desc">{job.description}</p>
+        <div className="job-detail-tags">
+          {job.budget && <span className="job-tag"><DollarSign size={12} /> {job.budget}</span>}
+          {job.location && <span className="job-tag"><MapPin size={12} /> {job.location}</span>}
+        </div>
+      </div>
+
+      {isOwner ? (
+        <div>
+          <h3 className="section-title">المتقدمون ({applicants.length})</h3>
+          {applicants.length === 0 && <EmptyState icon={User} title="لا يوجد متقدمون بعد" />}
+          {applicants.map((app, i) => (
+            <div className="applicant-card" key={i} onClick={() => goTo("userProfile", app.userId)}>
+              <Avatar user={app.user} size={36} />
+              <div className="applicant-body">
+                <div className="applicant-name">{app.user?.fullName}</div>
+                <div className="applicant-msg">{app.message}</div>
+              </div>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <div className="apply-box">
+          {applied ? (
+            <div className="applied-confirm"><CheckCircle2 size={18} /> تم إرسال طلبك مسبقًا لهذا المنشور</div>
+          ) : (
+            <>
+              <label className="field-label">رسالة التقديم</label>
+              <textarea className="field-input" rows={3} value={message} onChange={(e) => setMessage(e.target.value)} placeholder="عرّف عن نفسك ولماذا أنت مناسب لهذا الطلب..." />
+              <button className="btn-primary btn-gold" style={{ marginTop: 10 }} onClick={apply}>
+                <Send size={15} /> تقديم على الطلب
+              </button>
+            </>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ============================================================
+   الملف الشخصي
+   ============================================================ */
+function ProfileView({ currentUser, setCurrentUser, goTo, notify, viewUserId }) {
+  const targetId = viewUserId || currentUser.id;
+  const isSelf = targetId === currentUser.id;
+  const isAdmin = currentUser.username === ADMIN_USERNAME;
+  const [user, setUser] = useState(isSelf ? currentUser : null);
+  const [shop, setShop] = useState(null);
+  const [myPosts, setMyPosts] = useState([]);
+  const [editOpen, setEditOpen] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [following, setFollowing] = useState(false);
+  const [counts, setCounts] = useState({ followers: 0, following: 0 });
+  const [followBusy, setFollowBusy] = useState(false);
+  const [verifyBusy, setVerifyBusy] = useState(false);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    const u = await dbGet(KEYS.users(targetId), true);
+    setUser(u);
+    const s = await dbGet(KEYS.shop(targetId), true);
+    setShop(s);
+    const ids = (await dbGet(KEYS.posts, true)) || [];
+    const all = await Promise.all(ids.map((id) => dbGet(KEYS.post(id), true)));
+    setMyPosts(all.filter((p) => p && p.authorId === targetId).sort((a, b) => b.createdAt - a.createdAt));
+    const c = await getFollowCounts(targetId);
+    setCounts(c);
+    if (!isSelf) {
+      const f = await isFollowing(currentUser.id, targetId);
+      setFollowing(f);
+    }
+    setLoading(false);
+  }, [targetId, isSelf, currentUser.id]);
+
+  useEffect(() => { load(); }, [load]);
+
+  const toggleFollow = async () => {
+    setFollowBusy(true);
+    if (following) {
+      const ok = await unfollowUser(currentUser.id, targetId);
+      if (ok) { setFollowing(false); setCounts((c) => ({ ...c, followers: Math.max(0, c.followers - 1) })); }
+    } else {
+      const ok = await followUser(currentUser.id, targetId);
+      if (ok) { setFollowing(true); setCounts((c) => ({ ...c, followers: c.followers + 1 })); notify(`أصبحت تتابع ${user.fullName}`); }
+    }
+    setFollowBusy(false);
+  };
+
+  const toggleVerify = async () => {
+    setVerifyBusy(true);
+    const ok = await setUserVerified(targetId, !user.isVerified, currentUser.username);
+    if (ok) {
+      setUser((u) => ({ ...u, isVerified: !u.isVerified }));
+      notify(!user.isVerified ? "تم توثيق هذا الحساب ✓" : "تم إلغاء التوثيق");
+    } else {
+      notify("تعذّر تنفيذ الإجراء", "error");
+    }
+    setVerifyBusy(false);
+  };
+
+  if (loading || !user) {
+    return <div className="page-pad"><PageHeader title="الملف الشخصي" onBack={!isSelf ? () => goTo("feed") : undefined} /><div className="skel-block" style={{ height: 200 }} /></div>;
+  }
+
+  return (
+    <div className="profile-page">
+      <div className="profile-cover" style={user.cover ? { backgroundImage: `url(${user.cover})` } : {}}>
+        {!isSelf && <button className="back-btn floating" onClick={() => goTo("feed")}><ChevronRight size={20} /></button>}
+        {isSelf && (
+          <button className="edit-shop-btn" onClick={() => setEditOpen(true)}><Edit3 size={15} /> تعديل الملف</button>
+        )}
+      </div>
+
+      <div className="profile-card">
+        <div className="profile-avatar-wrap">
+          <Avatar user={user} size={88} />
+        </div>
+
+        <div className="profile-identity">
+          <h2>
+            {user.fullName}
+            {user.isVerified && <CheckCircle2 size={17} className="verified-icon" style={{ marginRight: 5, verticalAlign: -2 }} />}
+          </h2>
+          <span className="profile-username">@{user.username}</span>
+          {user.location && <span className="profile-location"><MapPin size={13} /> {user.location}</span>}
+        </div>
+
+        {user.bio && <p className="profile-bio">{user.bio}</p>}
+
+        <div className="follow-counts-row">
+          <span><b>{counts.followers}</b> متابِع</span>
+          <span className="fc-dot">·</span>
+          <span><b>{counts.following}</b> يتابع</span>
+        </div>
+
+        {user.socialLinks && user.socialLinks.length > 0 && (
+          <div className="profile-social-row">
+            {user.socialLinks.map((link, i) => {
+              const platform = SOCIAL_PLATFORMS.find((p) => p.key === link.platform) || SOCIAL_PLATFORMS[6];
+              const Icon = platform.icon;
+              const href = /^https?:\/\//.test(link.url) ? link.url : `https://${link.url}`;
+              return (
+                <a key={i} href={href} target="_blank" rel="noopener noreferrer" className="profile-social-pill" title={platform.label}>
+                  <Icon size={16} />
+                </a>
+              );
+            })}
+          </div>
+        )}
+
+        <div className="profile-actions-row">
+          {!isSelf && (
+            <button
+              className={`follow-btn ${following ? "is-following" : ""}`}
+              onClick={toggleFollow}
+              disabled={followBusy}
+            >
+              {followBusy ? <Loader2 size={15} className="nx-spin" /> : following ? <><UserCheck size={15} /> متابَع</> : <><UserPlus size={15} /> متابعة</>}
+            </button>
+          )}
+          {shop?.published ? (
+            <button className="profile-action-btn primary" onClick={() => goTo("shopPage", targetId)}>
+              <Store size={16} /> زيارة المتجر
+            </button>
+          ) : isSelf ? (
+            <button className="profile-action-btn gold" onClick={() => goTo("shopPage", targetId)}>
+              <Plus size={16} /> إنشاء متجر
+            </button>
+          ) : null}
+        </div>
+
+        {isSelf && (
+          <button className="profile-support-link" onClick={() => goTo("support")}>
+            <Coffee size={14} /> دعم نِكسا
+          </button>
+        )}
+
+        {isAdmin && !isSelf && (
+          <button className={`verify-admin-btn ${user.isVerified ? "active" : ""}`} onClick={toggleVerify} disabled={verifyBusy}>
+            {verifyBusy ? <Loader2 size={14} className="nx-spin" /> : <ShieldCheck size={15} />}
+            {user.isVerified ? "إلغاء التوثيق" : "توثيق هذا الحساب"}
+          </button>
+        )}
+      </div>
+
+      <div className="profile-posts-section">
+        <h3 className="section-title"><MessageCircle size={15} /> المنشورات</h3>
+        {myPosts.length === 0 && <EmptyState icon={MessageCircle} title="لا توجد منشورات" />}
+        {myPosts.map((p) => (
+          <PostCard key={p.id} post={p} author={user} currentUser={currentUser} goTo={goTo} onChanged={load} notify={notify} />
+        ))}
+      </div>
+
+      {editOpen && (
+        <ProfileEditModal
+          user={user}
+          onClose={() => setEditOpen(false)}
+          onSaved={(updated) => { setEditOpen(false); setUser(updated); setCurrentUser(updated); notify("تم تحديث ملفك الشخصي"); }}
+        />
+      )}
+    </div>
+  );
+}
+
+function SocialLinksEditor({ links, onChange }) {
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const usedKeys = new Set(links.map((l) => l.platform));
+  const available = SOCIAL_PLATFORMS.filter((p) => !usedKeys.has(p.key));
+
+  const addLink = (platformKey) => {
+    onChange([...links, { platform: platformKey, url: "" }]);
+    setPickerOpen(false);
+  };
+  const updateLink = (i, url) => {
+    const next = [...links];
+    next[i] = { ...next[i], url };
+    onChange(next);
+  };
+  const removeLink = (i) => {
+    onChange(links.filter((_, idx) => idx !== i));
+  };
+
+  return (
+    <div className="field-group">
+      <label className="field-label">روابطك (اختياري — أضف ما تريد فقط)</label>
+      {links.map((link, i) => {
+        const platform = SOCIAL_PLATFORMS.find((p) => p.key === link.platform) || SOCIAL_PLATFORMS[6];
+        const Icon = platform.icon;
+        return (
+          <div className="social-link-row" key={link.platform + i}>
+            <div className="social-link-icon"><Icon size={16} /></div>
+            <input
+              className="field-input"
+              value={link.url}
+              onChange={(e) => updateLink(i, e.target.value)}
+              placeholder={platform.placeholder}
+            />
+            <button type="button" className="social-link-remove" onClick={() => removeLink(i)}><X size={15} /></button>
+          </div>
+        );
+      })}
+
+      {available.length > 0 && (
+        <div style={{ position: "relative" }}>
+          <button type="button" className="add-link-btn" onClick={() => setPickerOpen((p) => !p)}>
+            <Plus size={15} /> إضافة رابط
+          </button>
+          {pickerOpen && (
+            <div className="link-picker">
+              {available.map((p) => {
+                const Icon = p.icon;
+                return (
+                  <button type="button" key={p.key} onClick={() => addLink(p.key)}>
+                    <Icon size={15} /> {p.label}
+                  </button>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ProfileEditModal({ user, onClose, onSaved }) {
+  const [fullName, setFullName] = useState(user.fullName || "");
+  const [bio, setBio] = useState(user.bio || "");
+  const [location, setLocation] = useState(user.location || "");
+  const [avatar, setAvatar] = useState(user.avatar || "");
+  const [cover, setCover] = useState(user.cover || "");
+  const [socialLinks, setSocialLinks] = useState(user.socialLinks || []);
+  const [saving, setSaving] = useState(false);
+
+  const save = async () => {
+    setSaving(true);
+    const cleanLinks = socialLinks.filter((l) => l.url && l.url.trim());
+    const updated = {
+      ...user, fullName: fullName.trim() || user.username, bio: bio.trim(), location: location.trim(),
+      avatar: avatar.trim(), cover: cover.trim(), socialLinks: cleanLinks,
+    };
+    await dbSet(KEYS.users(user.id), updated, true);
+    setSaving(false);
+    onSaved(updated);
+  };
+
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal-sheet tall" onClick={(e) => e.stopPropagation()}>
+        <div className="modal-handle" />
+        <div className="modal-head">
+          <h3>تعديل الملف الشخصي</h3>
+          <button className="icon-btn" onClick={onClose}><X size={20} /></button>
+        </div>
+
+        <div className="field-group">
+          <label className="field-label">صورة الغلاف</label>
+          <MediaUploader value={cover} onChange={setCover} folder="covers" height={110} />
+        </div>
+
+        <div className="field-group" style={{ textAlign: "center" }}>
+          <label className="field-label" style={{ textAlign: "center", display: "block" }}>صورة الملف الشخصي</label>
+          <MediaUploader value={avatar} onChange={setAvatar} folder="avatars" shape="circle" height={84} />
+        </div>
+
+        <div className="field-group">
+          <label className="field-label">الاسم الكامل</label>
+          <input className="field-input" value={fullName} onChange={(e) => setFullName(e.target.value)} />
+        </div>
+        <div className="field-group">
+          <label className="field-label">نبذة عنك</label>
+          <textarea className="field-input" rows={3} value={bio} onChange={(e) => setBio(e.target.value)} placeholder="اكتب نبذة قصيرة عنك أو عن مهاراتك (اختياري)" />
+        </div>
+        <div className="field-group">
+          <label className="field-label">الموقع</label>
+          <input className="field-input" value={location} onChange={(e) => setLocation(e.target.value)} placeholder="مثال: دبي، الإمارات (اختياري)" />
+        </div>
+
+        <SocialLinksEditor links={socialLinks} onChange={setSocialLinks} />
+
+        <button className="btn-primary" onClick={save} disabled={saving} style={{ marginTop: 8 }}>
+          {saving ? <Loader2 size={18} className="nx-spin" /> : "حفظ التعديلات"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/* ============================================================
+   نافذة المساعدة (شرح الاستخدام)
+   ============================================================ */
+function HelpModal({ onClose }) {
+  const steps = [
+    { icon: User, title: "أنشئ حسابك", text: "سجّل باسم مستخدم وكلمة مرور خاصة بك. حسابك محفوظ ويمكنك الدخول منه في أي وقت." },
+    { icon: MessageCircle, title: "شارك في المجتمع", text: "من الصفحة الرئيسية، انشر منشورات نصية، صور، فيديوهات، أو أعلن عن منتج لديك." },
+    { icon: Store, title: "افتح متجرك", text: "من صفحة حسابك، أنشئ متجرك الخاص وأضف منتجاتك الرقمية أو خدماتك مع صور وأسعار." },
+    { icon: Briefcase, title: "اطلب أو قدّم خدمة", text: "في قسم الوظائف، انشر طلب وظيفة أو خدمة، أو تقدّم لطلبات الآخرين برسالة قصيرة." },
+    { icon: DollarSign, title: "الدفع والتواصل", text: "كل تاجر يحدد طريقة الدفع أو التواصل الخاصة به داخل متجره — نِكسا لا يتدخل في عمليات الدفع." },
+  ];
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal-sheet tall" onClick={(e) => e.stopPropagation()}>
+        <div className="modal-handle" />
+        <div className="modal-head">
+          <h3>كيف يعمل نِكسا؟</h3>
+          <button className="icon-btn" onClick={onClose}><X size={20} /></button>
+        </div>
+        {steps.map((s, i) => {
+          const Icon = s.icon;
+          return (
+            <div className="help-step" key={i}>
+              <div className="help-step-icon"><Icon size={18} /></div>
+              <div>
+                <h4>{s.title}</h4>
+                <p>{s.text}</p>
+              </div>
+            </div>
+          );
+        })}
+        <button className="btn-primary" style={{ marginTop: 8 }} onClick={onClose}>فهمت، شكرًا</button>
+      </div>
+    </div>
+  );
+}
