@@ -5,7 +5,8 @@ import {
   MapPin, Star, CheckCircle2, X, Edit3, Trash2, Send, ChevronLeft,
   ChevronRight, Coffee, HelpCircle, Eye, EyeOff, ShoppingBag, Sparkles,
   Clock, DollarSign, Tag, Filter, Bell, Camera, Link2, ArrowRight,
-  Loader2, AlertCircle, Info, UserPlus, UserCheck, ShieldCheck, MoreVertical
+  Loader2, AlertCircle, Info, UserPlus, UserCheck, ShieldCheck, MoreVertical,
+  Upload, Globe, Aperture as InstagramIcon, Play as YoutubeIcon, AtSign as TwitterIcon, Users as FacebookIcon, MessageSquare, Music2
 } from "lucide-react";
 import { supabase } from "./supabaseClient.js";
 
@@ -25,6 +26,16 @@ const KEYS = {
   jobApps: (jobId) => `jobapps:${jobId}`,
   session: "session:current",
 };
+
+const SOCIAL_PLATFORMS = [
+  { key: "instagram", label: "إنستغرام", icon: InstagramIcon, placeholder: "رابط حسابك على إنستغرام" },
+  { key: "tiktok", label: "تيك توك", icon: Music2, placeholder: "رابط حسابك على تيك توك" },
+  { key: "youtube", label: "يوتيوب", icon: YoutubeIcon, placeholder: "رابط قناتك على يوتيوب" },
+  { key: "twitter", label: "X (تويتر)", icon: TwitterIcon, placeholder: "رابط حسابك على X" },
+  { key: "facebook", label: "فيسبوك", icon: FacebookIcon, placeholder: "رابط صفحتك على فيسبوك" },
+  { key: "whatsapp", label: "واتساب", icon: MessageSquare, placeholder: "رابط واتساب أو رقمك" },
+  { key: "website", label: "موقع / رابط آخر", icon: Globe, placeholder: "أي رابط تريد إضافته" },
+];
 
 function uid(prefix = "id") {
   return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 9)}`;
@@ -82,14 +93,16 @@ function rowToUser(r) {
   return {
     id: r.id, username: r.username, fullName: r.full_name, passHash: r.pass_hash,
     bio: r.bio || "", avatar: r.avatar || "", cover: r.cover || "", location: r.location || "",
-    hasShop: r.has_shop || false, isVerified: r.is_verified || false, createdAt: r.created_at,
+    hasShop: r.has_shop || false, isVerified: r.is_verified || false, socialLinks: r.social_links || [],
+    createdAt: r.created_at,
   };
 }
 function userToRow(u) {
   return {
     id: u.id, username: u.username, full_name: u.fullName, pass_hash: u.passHash,
     bio: u.bio || "", avatar: u.avatar || "", cover: u.cover || "", location: u.location || "",
-    has_shop: u.hasShop || false, is_verified: u.isVerified || false, created_at: u.createdAt,
+    has_shop: u.hasShop || false, is_verified: u.isVerified || false, social_links: u.socialLinks || [],
+    created_at: u.createdAt,
   };
 }
 function rowToShop(r) {
@@ -280,6 +293,26 @@ async function dbDelete(key, shared = true) {
 
 async function dbList(prefix, shared = true) {
   return [];
+}
+
+// ---------- رفع الملفات (صور وفيديو) إلى Supabase Storage ----------
+const MEDIA_BUCKET = "nexa-media";
+
+async function uploadMediaFile(file, folder = "general") {
+  try {
+    const ext = file.name.split(".").pop() || "jpg";
+    const path = `${folder}/${uid("media")}.${ext}`;
+    const { error } = await supabase.storage.from(MEDIA_BUCKET).upload(path, file, {
+      cacheControl: "3600",
+      upsert: false,
+    });
+    if (error) throw error;
+    const { data } = supabase.storage.from(MEDIA_BUCKET).getPublicUrl(path);
+    return data.publicUrl;
+  } catch (e) {
+    console.error("uploadMediaFile failed", e);
+    return null;
+  }
 }
 
 // ---------- وظائف متخصصة: المتابعة، الحذف، التوثيق ----------
@@ -725,6 +758,30 @@ function NexaStyles() {
       .avatar-img { object-fit: cover; flex-shrink: 0; }
       .avatar-fallback { background: linear-gradient(135deg, var(--teal-2), var(--teal)); color: #fff; display: flex; align-items: center; justify-content: center; font-weight: 800; flex-shrink: 0; }
 
+      /* ---- رافع الصور ---- */
+      .media-uploader { margin-bottom: 4px; }
+      .uploader-box {
+        position: relative; width: 100%; border-radius: 14px; background: var(--paper-2);
+        border: 1.5px dashed var(--line); overflow: hidden; cursor: pointer; display: flex;
+        align-items: center; justify-content: center; transition: border-color .15s;
+      }
+      .uploader-box:hover { border-color: var(--gold-2); }
+      .uploader-box.circle { border-radius: 50%; margin: 0 auto; }
+      .uploader-empty { display: flex; flex-direction: column; align-items: center; gap: 6px; color: var(--ink-soft); font-size: 12px; font-weight: 600; }
+      .uploader-preview-media { width: 100%; height: 100%; object-fit: cover; }
+      .uploader-overlay {
+        position: absolute; inset: 0; background: rgba(16,59,54,0.55); color: #fff; display: flex;
+        flex-direction: column; align-items: center; justify-content: center; gap: 4px; font-size: 11.5px; font-weight: 700;
+        opacity: 0; transition: opacity .15s;
+      }
+      .uploader-box:hover .uploader-overlay { opacity: 1; }
+      .uploader-overlay-loading { position: absolute; inset: 0; background: rgba(16,59,54,0.55); color: #fff; display: flex; align-items: center; justify-content: center; }
+      .uploader-remove-btn {
+        margin-top: 6px; background: none; border: none; color: var(--red); font-size: 12px; font-weight: 700;
+        display: flex; align-items: center; gap: 4px; padding: 2px;
+      }
+      .uploader-hint { font-size: 11.5px; color: var(--ink-soft); margin: 10px 0 6px; }
+
       /* ---- النوافذ المنبثقة (Modals) ---- */
       .modal-overlay { position: fixed; inset: 0; background: rgba(14,30,28,0.55); z-index: 200; display: flex; align-items: flex-end; justify-content: center; animation: fadeIn 0.15s; }
       @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
@@ -829,35 +886,69 @@ function NexaStyles() {
 
       /* ---- الملف الشخصي ---- */
       .profile-page { max-width: 640px; margin: 0 auto; padding-bottom: 24px; }
-      .profile-cover { position: relative; height: 130px; background: linear-gradient(135deg, var(--gold), var(--gold-2)); background-size: cover; background-position: center; }
-      .profile-head { text-align: center; margin-top: -42px; padding: 0 20px; }
-      .profile-head .avatar-fallback, .profile-head .avatar-img { border: 4px solid var(--paper); margin: 0 auto; }
-      .profile-head h2 { font-size: 19px; font-weight: 800; margin-top: 10px; }
+      .profile-cover { position: relative; height: 120px; background: linear-gradient(135deg, var(--gold), var(--gold-2)); background-size: cover; background-position: center; }
+      .profile-card {
+        background: #fff; border-radius: 20px; margin: -36px 14px 0; padding: 0 18px 18px;
+        box-shadow: var(--shadow); border: 1px solid var(--line); position: relative; z-index: 2;
+        display: flex; flex-direction: column; align-items: center; text-align: center;
+      }
+      .profile-avatar-wrap { margin-top: -36px; margin-bottom: 10px; }
+      .profile-avatar-wrap .avatar-fallback, .profile-avatar-wrap .avatar-img { border: 4px solid #fff; box-shadow: var(--shadow); }
+      .profile-identity h2 { font-size: 18px; font-weight: 800; }
       .profile-username { font-size: 12.5px; color: var(--ink-soft); }
-      .profile-bio { font-size: 13.5px; line-height: 1.7; margin-top: 8px; color: var(--ink-soft); max-width: 380px; margin-inline: auto; }
-      .profile-location { font-size: 12px; color: var(--ink-soft); display: inline-flex; align-items: center; gap: 4px; margin-top: 6px; }
-      .follow-counts-row { display: flex; align-items: center; justify-content: center; gap: 8px; font-size: 13px; color: var(--ink-soft); margin-top: 10px; }
+      .profile-location { font-size: 11.5px; color: var(--ink-soft); display: inline-flex; align-items: center; gap: 4px; margin-top: 5px; }
+      .profile-bio { font-size: 13px; line-height: 1.7; margin-top: 10px; color: var(--ink); max-width: 380px; padding: 0 6px; }
+
+      .follow-counts-row { display: flex; align-items: center; justify-content: center; gap: 8px; font-size: 13px; color: var(--ink-soft); margin-top: 12px; }
       .follow-counts-row b { color: var(--ink); font-weight: 800; }
       .fc-dot { opacity: 0.5; }
+
+      .profile-social-row { display: flex; gap: 8px; justify-content: center; margin-top: 12px; flex-wrap: wrap; }
+      .profile-social-pill {
+        width: 36px; height: 36px; border-radius: 50%; background: var(--paper-2); color: var(--teal-2);
+        display: flex; align-items: center; justify-content: center; transition: transform .12s, background .15s;
+      }
+      .profile-social-pill:hover { background: var(--teal); color: #fff; transform: translateY(-2px); }
+
+      .profile-actions-row { display: flex; gap: 9px; margin-top: 16px; justify-content: center; width: 100%; }
+      .profile-action-btn { background: #fff; border: 1.5px solid var(--line); border-radius: 11px; padding: 10px 16px; font-size: 13px; font-weight: 700; display: flex; align-items: center; gap: 6px; }
+      .profile-action-btn.primary { background: var(--teal); color: #fff; border-color: var(--teal); }
+      .profile-action-btn.gold { background: linear-gradient(135deg, var(--gold), var(--gold-2)); color: var(--teal); border-color: transparent; }
       .follow-btn {
-        margin-top: 12px; background: var(--teal); color: #fff; border: none; border-radius: 11px;
-        padding: 9px 22px; font-size: 13.5px; font-weight: 700; display: inline-flex; align-items: center; gap: 6px;
+        background: var(--teal); color: #fff; border: none; border-radius: 11px;
+        padding: 10px 18px; font-size: 13px; font-weight: 700; display: inline-flex; align-items: center; gap: 6px;
       }
       .follow-btn.is-following { background: #fff; color: var(--teal); border: 1.5px solid var(--teal); }
       .follow-btn:disabled { opacity: 0.7; }
+
+      .profile-support-link {
+        margin-top: 12px; background: none; border: none; color: var(--ink-soft); font-size: 12px; font-weight: 600;
+        display: inline-flex; align-items: center; gap: 5px; text-decoration: underline; text-decoration-color: var(--line);
+      }
       .verify-admin-btn {
-        margin-top: 10px; margin-right: 8px; background: #fff; color: var(--gold-2); border: 1.5px solid var(--gold-2);
+        margin-top: 12px; background: #fff; color: var(--gold-2); border: 1.5px solid var(--gold-2);
         border-radius: 11px; padding: 9px 16px; font-size: 13px; font-weight: 700; display: inline-flex; align-items: center; gap: 6px;
       }
       .verify-admin-btn.active { background: var(--gold-2); color: #fff; }
       .verify-admin-btn:disabled { opacity: 0.7; }
-      .profile-actions-row { display: flex; gap: 9px; padding: 18px 20px 0; justify-content: center; }
-      .profile-action-btn { background: #fff; border: 1.5px solid var(--line); border-radius: 11px; padding: 10px 16px; font-size: 13px; font-weight: 700; display: flex; align-items: center; gap: 6px; }
-      .profile-action-btn.primary { background: var(--teal); color: #fff; border-color: var(--teal); }
-      .profile-action-btn.gold { background: linear-gradient(135deg, var(--gold), var(--gold-2)); color: var(--teal); border-color: transparent; }
-      .profile-tabs-divider { height: 1px; background: var(--line); margin: 20px 20px 14px; }
-      .profile-page .section-title { padding: 0 20px; }
-      .profile-page .post-card, .profile-page .empty-state { margin: 0 16px 14px; }
+
+      .profile-posts-section { padding: 22px 16px 0; }
+      .profile-posts-section .section-title { display: flex; align-items: center; gap: 6px; margin-bottom: 12px; color: var(--ink-soft); text-transform: uppercase; font-size: 12px; letter-spacing: 0.3px; }
+
+      /* ---- محرر الروابط الاجتماعية ---- */
+      .social-link-row { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+      .social-link-icon { width: 34px; height: 34px; border-radius: 10px; background: var(--paper-2); color: var(--teal-2); display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
+      .social-link-remove { background: none; border: none; color: var(--ink-soft); flex-shrink: 0; padding: 6px; }
+      .add-link-btn {
+        background: var(--paper-2); border: 1.5px dashed var(--line); border-radius: 11px; padding: 10px;
+        font-size: 13px; font-weight: 700; color: var(--ink-soft); display: flex; align-items: center; justify-content: center; gap: 6px; width: 100%;
+      }
+      .link-picker {
+        position: absolute; top: calc(100% + 6px); left: 0; right: 0; background: #fff; border-radius: 12px;
+        box-shadow: var(--shadow); border: 1px solid var(--line); padding: 6px; z-index: 20; max-height: 220px; overflow-y: auto;
+      }
+      .link-picker button { display: flex; align-items: center; gap: 9px; width: 100%; background: none; border: none; padding: 10px 11px; border-radius: 9px; font-size: 13px; font-weight: 600; text-align: right; color: var(--ink); }
+      .link-picker button:hover { background: var(--paper-2); }
 
       /* ---- المساعدة ---- */
       .help-step { display: flex; gap: 12px; margin-bottom: 16px; align-items: flex-start; }
@@ -1302,10 +1393,86 @@ function Avatar({ user, size = 40, square = false }) {
   );
 }
 
+/* ============================================================
+   رافع الصور/الفيديو من الجهاز (Supabase Storage)
+   ============================================================ */
+function MediaUploader({ value, onChange, folder = "general", accept = "image/*", label, shape = "rect", height = 140 }) {
+  const inputRef = useRef(null);
+  const [uploading, setUploading] = useState(false);
+  const [error, setError] = useState("");
+  const isVideo = accept.includes("video");
+
+  const handleFile = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setError("");
+    const maxMb = isVideo ? 50 : 8;
+    if (file.size > maxMb * 1024 * 1024) {
+      setError(`حجم الملف كبير جدًا (الحد الأقصى ${maxMb} ميجا)`);
+      return;
+    }
+    setUploading(true);
+    const url = await uploadMediaFile(file, folder);
+    setUploading(false);
+    if (url) {
+      onChange(url);
+    } else {
+      setError("تعذّر رفع الملف، حاول مجددًا");
+    }
+  };
+
+  return (
+    <div className="media-uploader">
+      {label && <label className="field-label">{label}</label>}
+      <div
+        className={`uploader-box ${shape === "circle" ? "circle" : ""}`}
+        style={shape === "circle" ? { width: height, height: height } : { height }}
+        onClick={() => !uploading && inputRef.current?.click()}
+      >
+        {value ? (
+          isVideo ? (
+            <video src={value} className="uploader-preview-media" muted />
+          ) : (
+            <img src={value} alt="" className="uploader-preview-media" />
+          )
+        ) : (
+          <div className="uploader-empty">
+            {uploading ? <Loader2 size={22} className="nx-spin" /> : <Upload size={22} />}
+            <span>{uploading ? "جارٍ الرفع..." : isVideo ? "اضغط لرفع فيديو" : "اضغط لرفع صورة"}</span>
+          </div>
+        )}
+        {value && !uploading && (
+          <div className="uploader-overlay">
+            <Camera size={18} />
+            <span>تغيير</span>
+          </div>
+        )}
+        {uploading && value && (
+          <div className="uploader-overlay-loading"><Loader2 size={20} className="nx-spin" /></div>
+        )}
+      </div>
+      <input
+        ref={inputRef}
+        type="file"
+        accept={accept}
+        style={{ display: "none" }}
+        onChange={handleFile}
+      />
+      {value && !uploading && (
+        <button type="button" className="uploader-remove-btn" onClick={() => onChange("")}>
+          <Trash2 size={13} /> إزالة
+        </button>
+      )}
+      {error && <div className="field-error"><AlertCircle size={14} /> {error}</div>}
+    </div>
+  );
+}
+
 function PostComposer({ currentUser, onClose, onCreated, prefill }) {
   const [type, setType] = useState(prefill?.type || "text"); // text | image | video | product
   const [text, setText] = useState("");
   const [mediaUrl, setMediaUrl] = useState("");
+  const [videoLink, setVideoLink] = useState("");
   const [price, setPrice] = useState("");
   const [productName, setProductName] = useState("");
   const [posting, setPosting] = useState(false);
@@ -1313,8 +1480,9 @@ function PostComposer({ currentUser, onClose, onCreated, prefill }) {
 
   const submit = async () => {
     setError("");
-    if (!text.trim() && !mediaUrl.trim()) {
-      setError("اكتب نصًا أو أضف رابط صورة/فيديو");
+    const finalMedia = type === "video" ? (mediaUrl || videoLink.trim()) : mediaUrl;
+    if (!text.trim() && !finalMedia) {
+      setError("اكتب نصًا أو أضف صورة/فيديو");
       return;
     }
     if (type === "product" && !productName.trim()) {
@@ -1328,7 +1496,7 @@ function PostComposer({ currentUser, onClose, onCreated, prefill }) {
       authorId: currentUser.id,
       type,
       text: text.trim(),
-      mediaUrl: mediaUrl.trim(),
+      mediaUrl: finalMedia,
       productName: productName.trim(),
       price: price.trim(),
       likes: [],
@@ -1385,20 +1553,25 @@ function PostComposer({ currentUser, onClose, onCreated, prefill }) {
           </div>
         )}
 
-        {(type === "image" || type === "video" || type === "product") && (
+        {(type === "image" || type === "product") && (
           <div className="field-group" style={{ marginTop: 10 }}>
-            <label className="field-label">
-              {type === "video" ? "رابط الفيديو (يوتيوب أو رابط ملف فيديو)" : "رابط الصورة"}
-            </label>
+            <label className="field-label">صورة (اختياري)</label>
+            <MediaUploader value={mediaUrl} onChange={setMediaUrl} folder="posts" accept="image/*" height={160} />
+          </div>
+        )}
+
+        {type === "video" && (
+          <div className="field-group" style={{ marginTop: 10 }}>
+            <label className="field-label">رفع فيديو من جهازك</label>
+            <MediaUploader value={mediaUrl} onChange={setMediaUrl} folder="posts" accept="video/*" height={160} />
+            <p className="uploader-hint">أو الصق رابط فيديو يوتيوب بدلاً من الرفع:</p>
             <input
               className="field-input"
-              placeholder={type === "video" ? "https://youtube.com/watch?v=..." : "https://...jpg"}
-              value={mediaUrl}
-              onChange={(e) => setMediaUrl(e.target.value)}
+              placeholder="https://youtube.com/watch?v=..."
+              value={videoLink}
+              onChange={(e) => setVideoLink(e.target.value)}
+              disabled={!!mediaUrl}
             />
-            {type === "image" && mediaUrl && isImageUrl(mediaUrl) && (
-              <img src={mediaUrl} alt="" className="composer-preview" />
-            )}
           </div>
         )}
 
@@ -1843,7 +2016,7 @@ function ProductModal({ product, isOwner, onClose, onSave, onDelete }) {
           <button className="icon-btn" onClick={onClose}><X size={20} /></button>
         </div>
 
-        {image && isImageUrl(image) && <img src={image} alt="" className="composer-preview" style={{ marginBottom: 10 }} />}
+        {viewOnly && image && <img src={image} alt="" className="composer-preview" style={{ marginBottom: 10 }} />}
 
         {viewOnly ? (
           <div>
@@ -1853,6 +2026,10 @@ function ProductModal({ product, isOwner, onClose, onSave, onDelete }) {
           </div>
         ) : (
           <>
+            <div className="field-group">
+              <label className="field-label">صورة المنتج</label>
+              <MediaUploader value={image} onChange={setImage} folder="products" height={150} />
+            </div>
             <div className="field-group">
               <label className="field-label">اسم المنتج أو الخدمة</label>
               <input className="field-input" value={name} onChange={(e) => setName(e.target.value)} placeholder="مثال: تصميم شعار احترافي" />
@@ -1864,10 +2041,6 @@ function ProductModal({ product, isOwner, onClose, onSave, onDelete }) {
             <div className="field-group">
               <label className="field-label">الوصف</label>
               <textarea className="field-input" rows={3} value={desc} onChange={(e) => setDesc(e.target.value)} placeholder="اشرح منتجك أو خدمتك بإيجاز" />
-            </div>
-            <div className="field-group">
-              <label className="field-label">رابط صورة المنتج</label>
-              <input className="field-input" value={image} onChange={(e) => setImage(e.target.value)} placeholder="https://...jpg" />
             </div>
             {error && <div className="field-error"><AlertCircle size={14} /> {error}</div>}
             <button className="btn-primary" onClick={save} style={{ marginTop: 8 }}>حفظ المنتج</button>
@@ -1957,14 +2130,13 @@ function ShopEditModal({ shop, ownerId, onClose, onSaved }) {
         </div>
 
         <div className="field-group">
-          <label className="field-label">رابط صورة غلاف المتجر</label>
-          <input className="field-input" value={coverImage} onChange={(e) => setCoverImage(e.target.value)} placeholder="https://...jpg" />
-          {coverImage && isImageUrl(coverImage) && <img src={coverImage} className="composer-preview" alt="" />}
+          <label className="field-label">صورة غلاف المتجر</label>
+          <MediaUploader value={coverImage} onChange={setCoverImage} folder="shop-covers" height={130} />
         </div>
 
-        <div className="field-group">
-          <label className="field-label">رابط شعار المتجر</label>
-          <input className="field-input" value={logo} onChange={(e) => setLogo(e.target.value)} placeholder="https://...png" />
+        <div className="field-group" style={{ textAlign: "center" }}>
+          <label className="field-label" style={{ textAlign: "center", display: "block" }}>شعار المتجر</label>
+          <MediaUploader value={logo} onChange={setLogo} folder="shop-logos" shape="circle" height={84} />
         </div>
 
         <div className="field-group">
@@ -2012,433 +2184,4 @@ function JobsView({ currentUser, goTo, notify }) {
       <PageHeader
         title="الوظائف والخدمات"
         action={
-          <button className="header-add-btn" onClick={() => setComposerOpen(true)}>
-            <Plus size={16} /> طلب جديد
-          </button>
-        }
-      />
-
-      <div className="cat-scroll">
-        {types.map((t) => (
-          <button key={t} className={`cat-chip ${filter === t ? "active" : ""}`} onClick={() => setFilter(t)}>{t}</button>
-        ))}
-      </div>
-
-      {jobs === null && <div>{[1,2,3].map(i => <div key={i} className="job-card skel-block" style={{height: 90, marginBottom: 12}} />)}</div>}
-
-      {jobs && filtered.length === 0 && (
-        <EmptyState icon={Briefcase} title="لا توجد طلبات حاليًا" hint="كن أول من ينشر طلب وظيفة أو خدمة" />
-      )}
-
-      {filtered.map((j) => (
-        <div className="job-card" key={j.id} onClick={() => goTo("jobDetail", j.id)}>
-          <div className="job-card-top">
-            <span className={`job-type-pill jt-${j.jobType === "وظيفة" ? "job" : j.jobType === "خدمة مطلوبة" ? "svc" : "free"}`}>{j.jobType}</span>
-            <span className="job-time">{timeAgo(j.createdAt)}</span>
-          </div>
-          <h4 className="job-title">{j.title}</h4>
-          <p className="job-desc-preview">{j.description}</p>
-          <div className="job-card-bottom">
-            <span className="job-author"><Avatar user={usersCache[j.authorId]} size={20} /> {usersCache[j.authorId]?.fullName || "مستخدم"}</span>
-            {j.budget && <span className="job-budget"><DollarSign size={12} /> {j.budget}</span>}
-          </div>
-        </div>
-      ))}
-
-      {composerOpen && (
-        <JobComposer
-          currentUser={currentUser}
-          onClose={() => setComposerOpen(false)}
-          onCreated={() => { setComposerOpen(false); load(); notify("تم نشر طلبك بنجاح"); }}
-        />
-      )}
-    </div>
-  );
-}
-
-function JobComposer({ currentUser, onClose, onCreated }) {
-  const [jobType, setJobType] = useState("وظيفة");
-  const [title, setTitle] = useState("");
-  const [description, setDescription] = useState("");
-  const [budget, setBudget] = useState("");
-  const [location, setLocation] = useState("");
-  const [error, setError] = useState("");
-  const [posting, setPosting] = useState(false);
-
-  const submit = async () => {
-    if (!title.trim() || !description.trim()) { setError("اكتب العنوان والوصف على الأقل"); return; }
-    setPosting(true);
-    const id = uid("job");
-    const job = {
-      id, authorId: currentUser.id, jobType, title: title.trim(), description: description.trim(),
-      budget: budget.trim(), location: location.trim(), createdAt: Date.now(), applicants: [],
-    };
-    await dbSet(KEYS.job(id), job, true);
-    const idx = (await dbGet(KEYS.jobs, true)) || [];
-    idx.push(id);
-    await dbSet(KEYS.jobs, idx, true);
-    setPosting(false);
-    onCreated();
-  };
-
-  return (
-    <div className="modal-overlay" onClick={onClose}>
-      <div className="modal-sheet tall" onClick={(e) => e.stopPropagation()}>
-        <div className="modal-handle" />
-        <div className="modal-head">
-          <h3>طلب جديد</h3>
-          <button className="icon-btn" onClick={onClose}><X size={20} /></button>
-        </div>
-
-        <div className="composer-type-row">
-          {["وظيفة", "خدمة مطلوبة", "عمل حر"].map((t) => (
-            <button key={t} className={`type-chip ${jobType === t ? "active" : ""}`} onClick={() => setJobType(t)}>{t}</button>
-          ))}
-        </div>
-
-        <div className="field-group">
-          <label className="field-label">العنوان</label>
-          <input className="field-input" value={title} onChange={(e) => setTitle(e.target.value)} placeholder="مثال: مطلوب مصمم واجهات لمشروع تطبيق" />
-        </div>
-        <div className="field-group">
-          <label className="field-label">التفاصيل</label>
-          <textarea className="field-input" rows={4} value={description} onChange={(e) => setDescription(e.target.value)} placeholder="اشرح المطلوب بالتفصيل..." />
-        </div>
-        <div className="composer-product-fields">
-          <input className="field-input" placeholder="الميزانية (اختياري)" value={budget} onChange={(e) => setBudget(e.target.value)} />
-          <input className="field-input" placeholder="الموقع (اختياري)" value={location} onChange={(e) => setLocation(e.target.value)} />
-        </div>
-
-        {error && <div className="field-error"><AlertCircle size={14} /> {error}</div>}
-        <button className="btn-primary" style={{ marginTop: 14 }} onClick={submit} disabled={posting}>
-          {posting ? <Loader2 size={18} className="nx-spin" /> : "نشر الطلب"}
-        </button>
-      </div>
-    </div>
-  );
-}
-
-function JobDetailView({ jobId, currentUser, goTo, notify }) {
-  const [job, setJob] = useState(null);
-  const [author, setAuthor] = useState(null);
-  const [applicants, setApplicants] = useState([]);
-  const [message, setMessage] = useState("");
-  const [applied, setApplied] = useState(false);
-  const [loading, setLoading] = useState(true);
-
-  const load = useCallback(async () => {
-    setLoading(true);
-    const j = await dbGet(KEYS.job(jobId), true);
-    setJob(j);
-    if (j) {
-      const a = await dbGet(KEYS.users(j.authorId), true);
-      setAuthor(a);
-      const apps = (await dbGet(KEYS.jobApps(jobId), true)) || [];
-      const appUsers = await Promise.all(apps.map(async (app) => ({ ...app, user: await dbGet(KEYS.users(app.userId), true) })));
-      setApplicants(appUsers);
-      setApplied(apps.some((app) => app.userId === currentUser.id));
-    }
-    setLoading(false);
-  }, [jobId, currentUser.id]);
-
-  useEffect(() => { load(); }, [load]);
-
-  const apply = async () => {
-    if (!message.trim()) { notify("اكتب رسالة قصيرة للتقديم", "error"); return; }
-    const apps = (await dbGet(KEYS.jobApps(jobId), true)) || [];
-    apps.push({ userId: currentUser.id, message: message.trim(), createdAt: Date.now() });
-    await dbSet(KEYS.jobApps(jobId), apps, true);
-    setMessage("");
-    notify("تم إرسال طلبك بنجاح");
-    load();
-  };
-
-  if (loading) return <div className="page-pad"><PageHeader title="تفاصيل الطلب" onBack={() => goTo("jobs")} /><div className="skel-block" style={{ height: 200 }} /></div>;
-  if (!job) return <div className="page-pad"><PageHeader title="تفاصيل الطلب" onBack={() => goTo("jobs")} /><EmptyState icon={Briefcase} title="هذا الطلب غير موجود" /></div>;
-
-  const isOwner = job.authorId === currentUser.id;
-
-  return (
-    <div className="page-pad">
-      <PageHeader title="تفاصيل الطلب" onBack={() => goTo("jobs")} />
-      <div className="job-detail-card">
-        <span className={`job-type-pill jt-${job.jobType === "وظيفة" ? "job" : job.jobType === "خدمة مطلوبة" ? "svc" : "free"}`}>{job.jobType}</span>
-        <h2 className="job-detail-title">{job.title}</h2>
-        <div className="job-detail-meta" onClick={() => goTo("userProfile", author?.id)}>
-          <Avatar user={author} size={32} />
-          <div>
-            <div className="job-author-name">{author?.fullName}</div>
-            <div className="job-time">{timeAgo(job.createdAt)}</div>
-          </div>
-        </div>
-        <p className="job-detail-desc">{job.description}</p>
-        <div className="job-detail-tags">
-          {job.budget && <span className="job-tag"><DollarSign size={12} /> {job.budget}</span>}
-          {job.location && <span className="job-tag"><MapPin size={12} /> {job.location}</span>}
-        </div>
-      </div>
-
-      {isOwner ? (
-        <div>
-          <h3 className="section-title">المتقدمون ({applicants.length})</h3>
-          {applicants.length === 0 && <EmptyState icon={User} title="لا يوجد متقدمون بعد" />}
-          {applicants.map((app, i) => (
-            <div className="applicant-card" key={i} onClick={() => goTo("userProfile", app.userId)}>
-              <Avatar user={app.user} size={36} />
-              <div className="applicant-body">
-                <div className="applicant-name">{app.user?.fullName}</div>
-                <div className="applicant-msg">{app.message}</div>
-              </div>
-            </div>
-          ))}
-        </div>
-      ) : (
-        <div className="apply-box">
-          {applied ? (
-            <div className="applied-confirm"><CheckCircle2 size={18} /> تم إرسال طلبك مسبقًا لهذا المنشور</div>
-          ) : (
-            <>
-              <label className="field-label">رسالة التقديم</label>
-              <textarea className="field-input" rows={3} value={message} onChange={(e) => setMessage(e.target.value)} placeholder="عرّف عن نفسك ولماذا أنت مناسب لهذا الطلب..." />
-              <button className="btn-primary btn-gold" style={{ marginTop: 10 }} onClick={apply}>
-                <Send size={15} /> تقديم على الطلب
-              </button>
-            </>
-          )}
-        </div>
-      )}
-    </div>
-  );
-}
-
-/* ============================================================
-   الملف الشخصي
-   ============================================================ */
-function ProfileView({ currentUser, setCurrentUser, goTo, notify, viewUserId }) {
-  const targetId = viewUserId || currentUser.id;
-  const isSelf = targetId === currentUser.id;
-  const isAdmin = currentUser.username === ADMIN_USERNAME;
-  const [user, setUser] = useState(isSelf ? currentUser : null);
-  const [shop, setShop] = useState(null);
-  const [myPosts, setMyPosts] = useState([]);
-  const [editOpen, setEditOpen] = useState(false);
-  const [loading, setLoading] = useState(true);
-  const [following, setFollowing] = useState(false);
-  const [counts, setCounts] = useState({ followers: 0, following: 0 });
-  const [followBusy, setFollowBusy] = useState(false);
-  const [verifyBusy, setVerifyBusy] = useState(false);
-
-  const load = useCallback(async () => {
-    setLoading(true);
-    const u = await dbGet(KEYS.users(targetId), true);
-    setUser(u);
-    const s = await dbGet(KEYS.shop(targetId), true);
-    setShop(s);
-    const ids = (await dbGet(KEYS.posts, true)) || [];
-    const all = await Promise.all(ids.map((id) => dbGet(KEYS.post(id), true)));
-    setMyPosts(all.filter((p) => p && p.authorId === targetId).sort((a, b) => b.createdAt - a.createdAt));
-    const c = await getFollowCounts(targetId);
-    setCounts(c);
-    if (!isSelf) {
-      const f = await isFollowing(currentUser.id, targetId);
-      setFollowing(f);
-    }
-    setLoading(false);
-  }, [targetId, isSelf, currentUser.id]);
-
-  useEffect(() => { load(); }, [load]);
-
-  const toggleFollow = async () => {
-    setFollowBusy(true);
-    if (following) {
-      const ok = await unfollowUser(currentUser.id, targetId);
-      if (ok) { setFollowing(false); setCounts((c) => ({ ...c, followers: Math.max(0, c.followers - 1) })); }
-    } else {
-      const ok = await followUser(currentUser.id, targetId);
-      if (ok) { setFollowing(true); setCounts((c) => ({ ...c, followers: c.followers + 1 })); notify(`أصبحت تتابع ${user.fullName}`); }
-    }
-    setFollowBusy(false);
-  };
-
-  const toggleVerify = async () => {
-    setVerifyBusy(true);
-    const ok = await setUserVerified(targetId, !user.isVerified, currentUser.username);
-    if (ok) {
-      setUser((u) => ({ ...u, isVerified: !u.isVerified }));
-      notify(!user.isVerified ? "تم توثيق هذا الحساب ✓" : "تم إلغاء التوثيق");
-    } else {
-      notify("تعذّر تنفيذ الإجراء", "error");
-    }
-    setVerifyBusy(false);
-  };
-
-  if (loading || !user) {
-    return <div className="page-pad"><PageHeader title="الملف الشخصي" onBack={!isSelf ? () => goTo("feed") : undefined} /><div className="skel-block" style={{ height: 200 }} /></div>;
-  }
-
-  return (
-    <div className="profile-page">
-      <div className="profile-cover" style={user.cover ? { backgroundImage: `url(${user.cover})` } : {}}>
-        {!isSelf && <button className="back-btn floating" onClick={() => goTo("feed")}><ChevronRight size={20} /></button>}
-        {isSelf && (
-          <button className="edit-shop-btn" onClick={() => setEditOpen(true)}><Edit3 size={15} /> تعديل الملف</button>
-        )}
-      </div>
-      <div className="profile-head">
-        <Avatar user={user} size={84} />
-        <h2>
-          {user.fullName}
-          {user.isVerified && <CheckCircle2 size={17} className="verified-icon" style={{ marginRight: 5, verticalAlign: -2 }} />}
-        </h2>
-        <span className="profile-username">@{user.username}</span>
-        {user.bio && <p className="profile-bio">{user.bio}</p>}
-        {user.location && <span className="profile-location"><MapPin size={13} /> {user.location}</span>}
-
-        <div className="follow-counts-row">
-          <span><b>{counts.followers}</b> متابِع</span>
-          <span className="fc-dot">·</span>
-          <span><b>{counts.following}</b> يتابع</span>
-        </div>
-
-        {!isSelf && (
-          <button
-            className={`follow-btn ${following ? "is-following" : ""}`}
-            onClick={toggleFollow}
-            disabled={followBusy}
-          >
-            {followBusy ? <Loader2 size={15} className="nx-spin" /> : following ? <><UserCheck size={15} /> متابَع</> : <><UserPlus size={15} /> متابعة</>}
-          </button>
-        )}
-
-        {isAdmin && !isSelf && (
-          <button className={`verify-admin-btn ${user.isVerified ? "active" : ""}`} onClick={toggleVerify} disabled={verifyBusy}>
-            {verifyBusy ? <Loader2 size={14} className="nx-spin" /> : <ShieldCheck size={15} />}
-            {user.isVerified ? "إلغاء التوثيق" : "توثيق هذا الحساب"}
-          </button>
-        )}
-      </div>
-
-      <div className="profile-actions-row">
-        {shop?.published ? (
-          <button className="profile-action-btn primary" onClick={() => goTo("shopPage", targetId)}>
-            <Store size={16} /> زيارة المتجر
-          </button>
-        ) : isSelf ? (
-          <button className="profile-action-btn gold" onClick={() => goTo("shopPage", targetId)}>
-            <Plus size={16} /> إنشاء متجر
-          </button>
-        ) : null}
-        {isSelf && (
-          <button className="profile-action-btn" onClick={() => goTo("support")}>
-            <Coffee size={16} /> دعم نِكسا
-          </button>
-        )}
-      </div>
-
-      <div className="profile-tabs-divider" />
-      <h3 className="section-title">منشورات {isSelf ? "ك" : ""}</h3>
-
-      {myPosts.length === 0 && <EmptyState icon={MessageCircle} title="لا توجد منشورات" />}
-      {myPosts.map((p) => (
-        <PostCard key={p.id} post={p} author={user} currentUser={currentUser} goTo={goTo} onChanged={load} notify={notify} />
-      ))}
-
-      {editOpen && (
-        <ProfileEditModal
-          user={user}
-          onClose={() => setEditOpen(false)}
-          onSaved={(updated) => { setEditOpen(false); setUser(updated); setCurrentUser(updated); notify("تم تحديث ملفك الشخصي"); }}
-        />
-      )}
-    </div>
-  );
-}
-
-function ProfileEditModal({ user, onClose, onSaved }) {
-  const [fullName, setFullName] = useState(user.fullName || "");
-  const [bio, setBio] = useState(user.bio || "");
-  const [location, setLocation] = useState(user.location || "");
-  const [avatar, setAvatar] = useState(user.avatar || "");
-  const [cover, setCover] = useState(user.cover || "");
-  const [saving, setSaving] = useState(false);
-
-  const save = async () => {
-    setSaving(true);
-    const updated = { ...user, fullName: fullName.trim() || user.username, bio: bio.trim(), location: location.trim(), avatar: avatar.trim(), cover: cover.trim() };
-    await dbSet(KEYS.users(user.id), updated, true);
-    setSaving(false);
-    onSaved(updated);
-  };
-
-  return (
-    <div className="modal-overlay" onClick={onClose}>
-      <div className="modal-sheet tall" onClick={(e) => e.stopPropagation()}>
-        <div className="modal-handle" />
-        <div className="modal-head">
-          <h3>تعديل الملف الشخصي</h3>
-          <button className="icon-btn" onClick={onClose}><X size={20} /></button>
-        </div>
-        <div className="field-group">
-          <label className="field-label">الاسم الكامل</label>
-          <input className="field-input" value={fullName} onChange={(e) => setFullName(e.target.value)} />
-        </div>
-        <div className="field-group">
-          <label className="field-label">نبذة عنك</label>
-          <textarea className="field-input" rows={3} value={bio} onChange={(e) => setBio(e.target.value)} placeholder="اكتب نبذة قصيرة عنك أو عن مهاراتك" />
-        </div>
-        <div className="field-group">
-          <label className="field-label">الموقع</label>
-          <input className="field-input" value={location} onChange={(e) => setLocation(e.target.value)} placeholder="مثال: دبي، الإمارات" />
-        </div>
-        <div className="field-group">
-          <label className="field-label">رابط صورة الملف الشخصي</label>
-          <input className="field-input" value={avatar} onChange={(e) => setAvatar(e.target.value)} placeholder="https://...jpg" />
-        </div>
-        <div className="field-group">
-          <label className="field-label">رابط صورة الغلاف</label>
-          <input className="field-input" value={cover} onChange={(e) => setCover(e.target.value)} placeholder="https://...jpg" />
-        </div>
-        <button className="btn-primary" onClick={save} disabled={saving}>
-          {saving ? <Loader2 size={18} className="nx-spin" /> : "حفظ التعديلات"}
-        </button>
-      </div>
-    </div>
-  );
-}
-
-/* ============================================================
-   نافذة المساعدة (شرح الاستخدام)
-   ============================================================ */
-function HelpModal({ onClose }) {
-  const steps = [
-    { icon: User, title: "أنشئ حسابك", text: "سجّل باسم مستخدم وكلمة مرور خاصة بك. حسابك محفوظ ويمكنك الدخول منه في أي وقت." },
-    { icon: MessageCircle, title: "شارك في المجتمع", text: "من الصفحة الرئيسية، انشر منشورات نصية، صور، فيديوهات، أو أعلن عن منتج لديك." },
-    { icon: Store, title: "افتح متجرك", text: "من صفحة حسابك، أنشئ متجرك الخاص وأضف منتجاتك الرقمية أو خدماتك مع صور وأسعار." },
-    { icon: Briefcase, title: "اطلب أو قدّم خدمة", text: "في قسم الوظائف، انشر طلب وظيفة أو خدمة، أو تقدّم لطلبات الآخرين برسالة قصيرة." },
-    { icon: DollarSign, title: "الدفع والتواصل", text: "كل تاجر يحدد طريقة الدفع أو التواصل الخاصة به داخل متجره — نِكسا لا يتدخل في عمليات الدفع." },
-  ];
-  return (
-    <div className="modal-overlay" onClick={onClose}>
-      <div className="modal-sheet tall" onClick={(e) => e.stopPropagation()}>
-        <div className="modal-handle" />
-        <div className="modal-head">
-          <h3>كيف يعمل نِكسا؟</h3>
-          <button className="icon-btn" onClick={onClose}><X size={20} /></button>
-        </div>
-        {steps.map((s, i) => {
-          const Icon = s.icon;
-          return (
-            <div className="help-step" key={i}>
-              <div className="help-step-icon"><Icon size={18} /></div>
-              <div>
-                <h4>{s.title}</h4>
-                <p>{s.text}</p>
-              </div>
-            </div>
-          );
-        })}
-        <button className="btn-primary" style={{ marginTop: 8 }} onClick={onClose}>فهمت، شكرًا</button>
-      </div>
-    </div>
-  );
-}
+          <button className="header-add-btn" onClick={() => setCom…
