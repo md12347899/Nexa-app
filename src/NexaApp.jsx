@@ -410,6 +410,126 @@ async function setUserVerified(userId, verified, requesterUsername) {
   }
 }
 
+// ---------- الرسائل الخاصة ----------
+function conversationId(userIdA, userIdB) {
+  return [userIdA, userIdB].sort().join("__");
+}
+
+async function sendMessage(senderId, receiverId, text, imageUrl = "") {
+  try {
+    const id = uid("msg");
+    const { error } = await supabase.from("messages").insert({
+      id, sender_id: senderId, receiver_id: receiverId,
+      text: text || "", image_url: imageUrl || "", read: false, created_at: Date.now(),
+    });
+    if (error) throw error;
+    return true;
+  } catch (e) {
+    console.error("sendMessage failed", e);
+    lastDbErrorMessage = (e && e.message) ? e.message : String(e);
+    return false;
+  }
+}
+
+async function getConversation(userIdA, userIdB) {
+  try {
+    const { data, error } = await supabase
+      .from("messages")
+      .select("*")
+      .or(`and(sender_id.eq.${userIdA},receiver_id.eq.${userIdB}),and(sender_id.eq.${userIdB},receiver_id.eq.${userIdA})`)
+      .order("created_at", { ascending: true });
+    if (error) throw error;
+    return data.map((r) => ({
+      id: r.id, senderId: r.sender_id, receiverId: r.receiver_id,
+      text: r.text || "", imageUrl: r.image_url || "", read: r.read || false, createdAt: r.created_at,
+    }));
+  } catch (e) {
+    console.error("getConversation failed", e);
+    return [];
+  }
+}
+
+async function getMyConversationsList(userId) {
+  try {
+    const { data, error } = await supabase
+      .from("messages")
+      .select("*")
+      .or(`sender_id.eq.${userId},receiver_id.eq.${userId}`)
+      .order("created_at", { ascending: false });
+    if (error) throw error;
+    const seen = new Map();
+    for (const r of data) {
+      const otherId = r.sender_id === userId ? r.receiver_id : r.sender_id;
+      if (!seen.has(otherId)) {
+        seen.set(otherId, {
+          otherUserId: otherId,
+          lastText: r.text || (r.image_url ? "📷 صورة" : ""),
+          lastAt: r.created_at,
+          unread: r.receiver_id === userId && !r.read,
+        });
+      }
+    }
+    return Array.from(seen.values());
+  } catch (e) {
+    console.error("getMyConversationsList failed", e);
+    return [];
+  }
+}
+
+async function markConversationRead(otherUserId, myUserId) {
+  try {
+    await supabase.from("messages").update({ read: true })
+      .eq("sender_id", otherUserId).eq("receiver_id", myUserId).eq("read", false);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function getUnreadMessagesCount(userId) {
+  try {
+    const { count, error } = await supabase
+      .from("messages")
+      .select("id", { count: "exact", head: true })
+      .eq("receiver_id", userId).eq("read", false);
+    if (error) throw error;
+    return count || 0;
+  } catch {
+    return 0;
+  }
+}
+
+// ---------- البحث الشامل ----------
+async function searchNexa(query) {
+  const q = query.trim();
+  if (!q) return { users: [], shops: [], products: [] };
+  try {
+    const [usersRes, shopsRes] = await Promise.all([
+      supabase.from("users").select("*").or(`username.ilike.%${q}%,full_name.ilike.%${q}%`).limit(10),
+      supabase.from("shops").select("*").eq("published", true).or(`name.ilike.%${q}%,description.ilike.%${q}%`).limit(10),
+    ]);
+    const users = (usersRes.data || []).map(rowToUser);
+    const shops = (shopsRes.data || []).map(rowToShop);
+
+    // البحث داخل منتجات كل المتاجر المنشورة (تُفحص في الذاكرة لأنها JSONB)
+    const { data: allShops } = await supabase.from("shops").select("*").eq("published", true);
+    const products = [];
+    for (const s of allShops || []) {
+      const shopObj = rowToShop(s);
+      for (const p of shopObj.products || []) {
+        if (p.name?.toLowerCase().includes(q.toLowerCase()) || p.description?.toLowerCase().includes(q.toLowerCase())) {
+          products.push({ ...p, shopOwnerId: shopObj.ownerId, shopName: shopObj.name });
+        }
+      }
+    }
+
+    return { users, shops, products: products.slice(0, 10) };
+  } catch (e) {
+    console.error("searchNexa failed", e);
+    return { users: [], shops: [], products: [] };
+  }
+}
+
 // خاص بالمستخدم الحالي فقط (جهازه) — لتذكر تسجيل الدخول محليًا
 const LOCAL_SESSION_KEY = "nexa_local_session_v1";
 
@@ -964,6 +1084,68 @@ function NexaStyles() {
       .help-step h4 { font-size: 13.5px; font-weight: 700; margin-bottom: 3px; }
       .help-step p { font-size: 12.5px; color: var(--ink-soft); line-height: 1.7; }
 
+      /* ---- شارة عدد الرسائل في الشريط السفلي ---- */
+      .nav-tab-icon-wrap { position: relative; display: inline-flex; }
+      .nav-badge {
+        position: absolute; top: -6px; left: -10px; background: var(--red); color: #fff; font-size: 9.5px;
+        font-weight: 800; min-width: 16px; height: 16px; border-radius: 999px; display: flex; align-items: center;
+        justify-content: center; padding: 0 3px; border: 1.5px solid #fff;
+      }
+
+      /* ---- نافذة البحث ---- */
+      .search-overlay { align-items: flex-start; padding-top: 0; }
+      .search-sheet {
+        background: var(--paper); width: 100%; max-width: 480px; height: 100vh; display: flex; flex-direction: column;
+        animation: sheetUp 0.18s ease-out;
+      }
+      .search-input-row { display: flex; align-items: center; gap: 8px; padding: 14px 16px; border-bottom: 1px solid var(--line); background: #fff; }
+      .search-input-row .search-icon { color: var(--ink-soft); flex-shrink: 0; }
+      .search-input-row .search-input { flex: 1; border: none; background: var(--paper-2); padding: 10px 14px; }
+      .search-results-scroll { flex: 1; overflow-y: auto; padding: 10px 16px 30px; }
+      .search-loading { display: flex; justify-content: center; padding: 30px; color: var(--ink-soft); }
+      .search-section { margin-bottom: 18px; }
+      .search-section-title { font-size: 12px; font-weight: 700; color: var(--ink-soft); text-transform: uppercase; letter-spacing: 0.3px; margin-bottom: 8px; }
+      .search-result-row { display: flex; align-items: center; gap: 11px; padding: 9px 6px; border-radius: 12px; cursor: pointer; }
+      .search-result-row:hover { background: var(--paper-2); }
+      .search-shop-icon { width: 38px; height: 38px; border-radius: 10px; background: var(--paper-2); color: var(--teal-2); display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
+      .search-result-body { display: flex; flex-direction: column; flex: 1; min-width: 0; }
+      .search-result-name { font-size: 13.5px; font-weight: 700; display: inline-flex; align-items: center; }
+      .search-result-sub { font-size: 11.5px; color: var(--ink-soft); }
+      .search-result-price { font-size: 12px; font-weight: 700; color: var(--gold-2); flex-shrink: 0; }
+
+      /* ---- قائمة المحادثات ---- */
+      .conv-row { display: flex; align-items: center; gap: 12px; padding: 12px 6px; border-bottom: 1px solid var(--line); cursor: pointer; }
+      .conv-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+      .conv-top-row { display: flex; justify-content: space-between; align-items: center; }
+      .conv-name { font-size: 14px; font-weight: 700; display: inline-flex; align-items: center; }
+      .conv-time { font-size: 11px; color: var(--ink-soft); flex-shrink: 0; }
+      .conv-preview { font-size: 12.5px; color: var(--ink-soft); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .conv-preview.unread { color: var(--ink); font-weight: 700; }
+      .conv-dot { width: 9px; height: 9px; border-radius: 50%; background: var(--gold-2); flex-shrink: 0; }
+
+      /* ---- صفحة الدردشة ---- */
+      .chat-page { display: flex; flex-direction: column; height: calc(100vh - 0px); max-width: 640px; margin: 0 auto; }
+      .chat-header { display: flex; align-items: center; gap: 10px; padding: 12px 16px; border-bottom: 1px solid var(--line); background: #fff; position: sticky; top: 0; z-index: 5; }
+      .chat-header-user { display: flex; align-items: center; gap: 10px; cursor: pointer; flex: 1; }
+      .chat-header-name { font-size: 14px; font-weight: 700; display: inline-flex; align-items: center; }
+      .chat-header-username { font-size: 11.5px; color: var(--ink-soft); }
+      .chat-messages { flex: 1; overflow-y: auto; padding: 14px 16px; display: flex; flex-direction: column; gap: 8px; }
+      .chat-bubble-row { display: flex; justify-content: flex-start; }
+      .chat-bubble-row.mine { justify-content: flex-end; }
+      .chat-bubble {
+        max-width: 78%; background: #fff; border: 1px solid var(--line); border-radius: 16px 16px 16px 4px;
+        padding: 9px 13px; font-size: 13.5px; line-height: 1.6; position: relative;
+      }
+      .chat-bubble.mine { background: var(--teal); color: #fff; border-color: var(--teal); border-radius: 16px 16px 4px 16px; }
+      .chat-bubble p { margin: 0; white-space: pre-wrap; }
+      .chat-bubble-img { width: 100%; max-width: 220px; border-radius: 10px; margin-bottom: 6px; display: block; }
+      .chat-bubble-time { display: block; font-size: 10px; opacity: 0.65; margin-top: 4px; text-align: left; }
+      .chat-image-uploader { padding: 10px 16px; border-top: 1px solid var(--line); background: #fff; }
+      .chat-cancel-image { margin-top: 6px; background: none; border: none; color: var(--red); font-size: 12px; font-weight: 700; }
+      .chat-input-bar { display: flex; align-items: center; gap: 8px; padding: 10px 14px; border-top: 1px solid var(--line); background: #fff; }
+      .chat-text-input { flex: 1; border: 1.5px solid var(--line); border-radius: 999px; padding: 10px 16px; font-size: 13.5px; outline: none; }
+      .chat-text-input:focus { border-color: var(--gold-2); }
+
       @media (max-width: 380px) {
         .shop-grid, .products-grid { grid-template-columns: 1fr 1fr; gap: 9px; }
       }
@@ -1172,11 +1354,25 @@ function AuthScreen({ onLogin, notify }) {
    ============================================================ */
 function AppShell({ currentUser, setCurrentUser, view, viewParam, goTo, onLogout, notify, showHelp, setShowHelp }) {
   const [menuOpen, setMenuOpen] = useState(false);
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [unreadCount, setUnreadCount] = useState(0);
+
+  const refreshUnread = useCallback(async () => {
+    const c = await getUnreadMessagesCount(currentUser.id);
+    setUnreadCount(c);
+  }, [currentUser.id]);
+
+  useEffect(() => {
+    refreshUnread();
+    const interval = setInterval(refreshUnread, 15000);
+    return () => clearInterval(interval);
+  }, [refreshUnread]);
 
   const tabs = [
     { key: "feed", label: "الرئيسية", icon: Home },
     { key: "shops", label: "المتاجر", icon: Store },
     { key: "jobs", label: "الوظائف", icon: Briefcase },
+    { key: "messages", label: "الرسائل", icon: MessageSquare, badge: unreadCount },
     { key: "profile", label: "حسابي", icon: User },
   ];
 
@@ -1189,6 +1385,9 @@ function AppShell({ currentUser, setCurrentUser, view, viewParam, goTo, onLogout
             <span className="brand-text">نِكسا</span>
           </button>
           <div className="shell-header-actions">
+            <button className="icon-btn" onClick={() => setSearchOpen(true)} title="بحث">
+              <Search size={20} />
+            </button>
             <button className="icon-btn" onClick={() => setShowHelp(true)} title="مساعدة">
               <HelpCircle size={20} />
             </button>
@@ -1221,6 +1420,8 @@ function AppShell({ currentUser, setCurrentUser, view, viewParam, goTo, onLogout
         {view === "shopPage" && <ShopPage shopOwnerId={viewParam} currentUser={currentUser} goTo={goTo} notify={notify} />}
         {view === "jobs" && <JobsView currentUser={currentUser} goTo={goTo} notify={notify} />}
         {view === "jobDetail" && <JobDetailView jobId={viewParam} currentUser={currentUser} goTo={goTo} notify={notify} />}
+        {view === "messages" && <ConversationsListView currentUser={currentUser} goTo={goTo} notify={notify} onRead={refreshUnread} />}
+        {view === "chat" && <ChatView currentUser={currentUser} otherUserId={viewParam} goTo={goTo} notify={notify} onRead={refreshUnread} />}
         {view === "profile" && (
           <ProfileView
             currentUser={currentUser}
@@ -1244,15 +1445,26 @@ function AppShell({ currentUser, setCurrentUser, view, viewParam, goTo, onLogout
       <nav className="bottom-nav">
         {tabs.map((t) => {
           const Icon = t.icon;
-          const active = view === t.key || (t.key === "shops" && view === "shopPage") || (t.key === "jobs" && view === "jobDetail") || (t.key === "profile" && view === "userProfile");
+          const active = view === t.key
+            || (t.key === "shops" && view === "shopPage")
+            || (t.key === "jobs" && view === "jobDetail")
+            || (t.key === "profile" && view === "userProfile")
+            || (t.key === "messages" && view === "chat");
           return (
             <button key={t.key} className={`nav-tab ${active ? "active" : ""}`} onClick={() => goTo(t.key)}>
-              <Icon size={22} strokeWidth={active ? 2.4 : 1.8} />
+              <span className="nav-tab-icon-wrap">
+                <Icon size={22} strokeWidth={active ? 2.4 : 1.8} />
+                {t.badge > 0 && <span className="nav-badge">{t.badge > 9 ? "9+" : t.badge}</span>}
+              </span>
               <span>{t.label}</span>
             </button>
           );
         })}
       </nav>
+
+      {searchOpen && (
+        <SearchModal currentUser={currentUser} goTo={goTo} onClose={() => setSearchOpen(false)} />
+      )}
     </div>
   );
 }
@@ -2518,6 +2730,11 @@ function ProfileView({ currentUser, setCurrentUser, goTo, notify, viewUserId }) 
               {followBusy ? <Loader2 size={15} className="nx-spin" /> : following ? <><UserCheck size={15} /> متابَع</> : <><UserPlus size={15} /> متابعة</>}
             </button>
           )}
+          {!isSelf && (
+            <button className="profile-action-btn" onClick={() => goTo("chat", targetId)}>
+              <MessageSquare size={16} /> رسالة
+            </button>
+          )}
           {shop?.published ? (
             <button className="profile-action-btn primary" onClick={() => goTo("shopPage", targetId)}>
               <Store size={16} /> زيارة المتجر
@@ -2718,6 +2935,277 @@ function HelpModal({ onClose }) {
           );
         })}
         <button className="btn-primary" style={{ marginTop: 8 }} onClick={onClose}>فهمت، شكرًا</button>
+      </div>
+    </div>
+  );
+}
+
+/* ============================================================
+   نافذة البحث الشامل
+   ============================================================ */
+function SearchModal({ currentUser, goTo, onClose }) {
+  const [query, setQuery] = useState("");
+  const [results, setResults] = useState(null);
+  const [searching, setSearching] = useState(false);
+  const debounceRef = useRef(null);
+
+  useEffect(() => {
+    if (!query.trim()) {
+      setResults(null);
+      return;
+    }
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    debounceRef.current = setTimeout(async () => {
+      setSearching(true);
+      const r = await searchNexa(query);
+      setResults(r);
+      setSearching(false);
+    }, 400);
+    return () => clearTimeout(debounceRef.current);
+  }, [query]);
+
+  const goToUser = (id) => { onClose(); goTo("userProfile", id); };
+  const goToShop = (id) => { onClose(); goTo("shopPage", id); };
+
+  const hasAny = results && (results.users.length || results.shops.length || results.products.length);
+
+  return (
+    <div className="modal-overlay search-overlay" onClick={onClose}>
+      <div className="search-sheet" onClick={(e) => e.stopPropagation()}>
+        <div className="search-input-row">
+          <Search size={18} className="search-icon" />
+          <input
+            className="field-input search-input"
+            autoFocus
+            placeholder="ابحث عن أشخاص، متاجر، أو منتجات..."
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+          />
+          <button className="icon-btn" onClick={onClose}><X size={20} /></button>
+        </div>
+
+        <div className="search-results-scroll">
+          {!query.trim() && (
+            <EmptyState icon={Search} title="ابحث في نِكسا" hint="اكتب اسم شخص، متجر، أو منتج تبحث عنه" />
+          )}
+          {searching && <div className="search-loading"><Loader2 size={20} className="nx-spin" /></div>}
+
+          {results && !searching && !hasAny && (
+            <EmptyState icon={Search} title="لا نتائج" hint="جرّب كلمة بحث أخرى" />
+          )}
+
+          {results && results.users.length > 0 && (
+            <div className="search-section">
+              <h4 className="search-section-title">أشخاص</h4>
+              {results.users.map((u) => (
+                <div className="search-result-row" key={u.id} onClick={() => goToUser(u.id)}>
+                  <Avatar user={u} size={38} />
+                  <div className="search-result-body">
+                    <span className="search-result-name">
+                      {u.fullName}
+                      {u.isVerified && <CheckCircle2 size={13} className="verified-icon" style={{ marginRight: 4 }} />}
+                    </span>
+                    <span className="search-result-sub">@{u.username}</span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {results && results.shops.length > 0 && (
+            <div className="search-section">
+              <h4 className="search-section-title">متاجر</h4>
+              {results.shops.map((s) => (
+                <div className="search-result-row" key={s.ownerId} onClick={() => goToShop(s.ownerId)}>
+                  <div className="search-shop-icon"><Store size={17} /></div>
+                  <div className="search-result-body">
+                    <span className="search-result-name">{s.name}</span>
+                    <span className="search-result-sub">{s.category}</span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {results && results.products.length > 0 && (
+            <div className="search-section">
+              <h4 className="search-section-title">منتجات وخدمات</h4>
+              {results.products.map((p, i) => (
+                <div className="search-result-row" key={p.id + i} onClick={() => goToShop(p.shopOwnerId)}>
+                  <div className="search-shop-icon"><ShoppingBag size={17} /></div>
+                  <div className="search-result-body">
+                    <span className="search-result-name">{p.name}</span>
+                    <span className="search-result-sub">في متجر {p.shopName}</span>
+                  </div>
+                  {p.price && <span className="search-result-price">{p.price}</span>}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ============================================================
+   قائمة المحادثات
+   ============================================================ */
+function ConversationsListView({ currentUser, goTo, notify, onRead }) {
+  const [conversations, setConversations] = useState(null);
+  const [usersCache, setUsersCache] = useState({});
+
+  const load = useCallback(async () => {
+    const list = await getMyConversationsList(currentUser.id);
+    setConversations(list);
+    const ids = list.map((c) => c.otherUserId);
+    const fetched = await Promise.all(ids.map((id) => dbGet(KEYS.users(id), true)));
+    const map = {};
+    ids.forEach((id, i) => { if (fetched[i]) map[id] = fetched[i]; });
+    setUsersCache(map);
+  }, [currentUser.id]);
+
+  useEffect(() => { load(); }, [load]);
+
+  return (
+    <div className="page-pad">
+      <PageHeader title="الرسائل" />
+      {conversations === null && <div className="skel-block" style={{ height: 200 }} />}
+      {conversations && conversations.length === 0 && (
+        <EmptyState icon={MessageSquare} title="لا توجد محادثات بعد" hint="ابدأ محادثة من الملف الشخصي لأي مستخدم" />
+      )}
+      {conversations && conversations.map((c) => {
+        const u = usersCache[c.otherUserId];
+        return (
+          <div key={c.otherUserId} className="conv-row" onClick={() => goTo("chat", c.otherUserId)}>
+            <Avatar user={u} size={48} />
+            <div className="conv-body">
+              <div className="conv-top-row">
+                <span className="conv-name">
+                  {u?.fullName || "مستخدم"}
+                  {u?.isVerified && <CheckCircle2 size={12} className="verified-icon" style={{ marginRight: 3 }} />}
+                </span>
+                <span className="conv-time">{timeAgo(c.lastAt)}</span>
+              </div>
+              <span className={`conv-preview ${c.unread ? "unread" : ""}`}>{c.lastText || "..."}</span>
+            </div>
+            {c.unread && <span className="conv-dot" />}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+/* ============================================================
+   صفحة المحادثة (الدردشة الخاصة)
+   ============================================================ */
+function ChatView({ currentUser, otherUserId, goTo, notify, onRead }) {
+  const [otherUser, setOtherUser] = useState(null);
+  const [messages, setMessages] = useState(null);
+  const [text, setText] = useState("");
+  const [imageUrl, setImageUrl] = useState("");
+  const [showImageUploader, setShowImageUploader] = useState(false);
+  const [sending, setSending] = useState(false);
+  const scrollRef = useRef(null);
+  const pollRef = useRef(null);
+
+  const load = useCallback(async (silent = false) => {
+    const [u, msgs] = await Promise.all([
+      dbGet(KEYS.users(otherUserId), true),
+      getConversation(currentUser.id, otherUserId),
+    ]);
+    setOtherUser(u);
+    setMessages(msgs);
+    await markConversationRead(otherUserId, currentUser.id);
+    if (onRead) onRead();
+    if (!silent) {
+      setTimeout(() => {
+        scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
+      }, 100);
+    }
+  }, [currentUser.id, otherUserId, onRead]);
+
+  useEffect(() => {
+    load();
+    pollRef.current = setInterval(() => load(true), 8000);
+    return () => clearInterval(pollRef.current);
+  }, [load]);
+
+  const send = async () => {
+    if (!text.trim() && !imageUrl) return;
+    setSending(true);
+    const ok = await sendMessage(currentUser.id, otherUserId, text.trim(), imageUrl);
+    if (ok) {
+      setText("");
+      setImageUrl("");
+      setShowImageUploader(false);
+      await load();
+    } else {
+      notify("تعذّر إرسال الرسالة", "error");
+    }
+    setSending(false);
+  };
+
+  if (messages === null) {
+    return <div className="page-pad"><PageHeader title="محادثة" onBack={() => goTo("messages")} /><div className="skel-block" style={{ height: 300 }} /></div>;
+  }
+
+  return (
+    <div className="chat-page">
+      <div className="chat-header">
+        <button className="back-btn" onClick={() => goTo("messages")}><ChevronRight size={20} /></button>
+        <div className="chat-header-user" onClick={() => goTo("userProfile", otherUserId)}>
+          <Avatar user={otherUser} size={36} />
+          <div>
+            <div className="chat-header-name">
+              {otherUser?.fullName || "مستخدم"}
+              {otherUser?.isVerified && <CheckCircle2 size={12} className="verified-icon" style={{ marginRight: 3 }} />}
+            </div>
+            <div className="chat-header-username">@{otherUser?.username}</div>
+          </div>
+        </div>
+      </div>
+
+      <div className="chat-messages" ref={scrollRef}>
+        {messages.length === 0 && (
+          <EmptyState icon={MessageSquare} title="ابدأ المحادثة" hint={`أرسل أول رسالة إلى ${otherUser?.fullName || "هذا المستخدم"}`} />
+        )}
+        {messages.map((m) => {
+          const isMine = m.senderId === currentUser.id;
+          return (
+            <div key={m.id} className={`chat-bubble-row ${isMine ? "mine" : ""}`}>
+              <div className={`chat-bubble ${isMine ? "mine" : ""}`}>
+                {m.imageUrl && <img src={m.imageUrl} alt="" className="chat-bubble-img" />}
+                {m.text && <p>{m.text}</p>}
+                <span className="chat-bubble-time">{new Date(m.createdAt).toLocaleTimeString("ar", { hour: "2-digit", minute: "2-digit" })}</span>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      {showImageUploader && (
+        <div className="chat-image-uploader">
+          <MediaUploader value={imageUrl} onChange={setImageUrl} folder="messages" accept="image/*" height={110} />
+          <button className="chat-cancel-image" onClick={() => { setShowImageUploader(false); setImageUrl(""); }}>إلغاء</button>
+        </div>
+      )}
+
+      <div className="chat-input-bar">
+        <button className="icon-btn" onClick={() => setShowImageUploader((s) => !s)}>
+          <ImageIcon size={20} />
+        </button>
+        <input
+          className="chat-text-input"
+          placeholder="اكتب رسالة..."
+          value={text}
+          onChange={(e) => setText(e.target.value)}
+          onKeyDown={(e) => e.key === "Enter" && send()}
+        />
+        <button className="icon-btn-solid" onClick={send} disabled={sending}>
+          {sending ? <Loader2 size={16} className="nx-spin" /> : <Send size={16} />}
+        </button>
       </div>
     </div>
   );
