@@ -155,6 +155,12 @@ function jobToRow(j) {
 
 // dbGet/dbSet يحافظان على نفس التوقيع المستخدم في كل الملف: (key, shared)
 // لكن المفتاح الآن يُفسَّر إلى جدول وعملية Supabase مناسبة.
+// يحفظ نص آخر خطأ حدث فعليًا من Supabase، لعرضه في الواجهة عند الحاجة بدل الفشل الصامت
+let lastDbErrorMessage = "";
+function getLastDbError() {
+  return lastDbErrorMessage;
+}
+
 async function dbGet(key, shared = true) {
   try {
     if (key === KEYS.userIndex) {
@@ -211,6 +217,7 @@ async function dbGet(key, shared = true) {
     return null;
   } catch (e) {
     console.error("dbGet failed", key, e);
+    lastDbErrorMessage = (e && e.message) ? e.message : String(e);
     return null;
   }
 }
@@ -264,6 +271,7 @@ async function dbSet(key, value, shared = true) {
     return null;
   } catch (e) {
     console.error("dbSet failed", key, e);
+    lastDbErrorMessage = (e && e.message) ? e.message : String(e);
     return null;
   }
 }
@@ -1017,7 +1025,13 @@ function AuthScreen({ onLogin, notify }) {
           createdAt: Date.now(),
           hasShop: false,
         };
-        await dbSet(KEYS.users(id), newUser, true);
+        const saveResult = await dbSet(KEYS.users(id), newUser, true);
+        if (!saveResult) {
+          const detail = getLastDbError();
+          setError("تعذّر إنشاء الحساب فعليًا في قاعدة البيانات." + (detail ? ` (تفصيل الخطأ: ${detail})` : " تأكد من اتصال الإنترنت وحاول مجددًا."));
+          setLoading(false);
+          return;
+        }
         await dbSet(`uname:${username}`, id, true);
         // فهرس المستخدمين
         const idx = (await dbGet(KEYS.userIndex, true)) || [];
