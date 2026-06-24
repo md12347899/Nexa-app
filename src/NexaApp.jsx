@@ -93,8 +93,8 @@ function rowToUser(r) {
   return {
     id: r.id, username: r.username, fullName: r.full_name, passHash: r.pass_hash,
     bio: r.bio || "", avatar: r.avatar || "", cover: r.cover || "", location: r.location || "",
-    hasShop: r.has_shop || false, isVerified: r.is_verified || false, socialLinks: r.social_links || [],
-    createdAt: r.created_at,
+    hasShop: r.has_shop || false, isVerified: r.is_verified || false, isAdmin: r.is_admin || false,
+    socialLinks: r.social_links || [], createdAt: r.created_at,
   };
 }
 function userToRow(u) {
@@ -382,6 +382,24 @@ async function getFollowingIds(userId) {
   } catch {
     return [];
   }
+}
+
+async function getFollowersIds(userId) {
+  try {
+    const { data, error } = await supabase.from("follows").select("follower_id").eq("following_id", userId);
+    if (error) throw error;
+    return data.map((r) => r.follower_id);
+  } catch {
+    return [];
+  }
+}
+
+async function getFollowListUsers(userId, type) {
+  // type: "followers" | "following"
+  const ids = type === "followers" ? await getFollowersIds(userId) : await getFollowingIds(userId);
+  if (ids.length === 0) return [];
+  const users = await Promise.all(ids.map((id) => dbGet(KEYS.users(id), true)));
+  return users.filter(Boolean);
 }
 
 async function deletePost(postId, authorId, requesterId) {
@@ -943,7 +961,8 @@ function NexaStyles() {
       .shop-card-body { padding: 11px; }
       .shop-card-title-row { display: flex; align-items: center; gap: 6px; margin-bottom: 5px; }
       .shop-card-name { font-weight: 700; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
-      .verified-icon { color: var(--gold-2); flex-shrink: 0; }
+      .verified-icon { color: #1D9BF0; flex-shrink: 0; }
+      .verified-icon-bg { fill: #1D9BF0; }
       .shop-card-cat { font-size: 11px; color: var(--ink-soft); display: block; margin-bottom: 7px; }
       .shop-card-stats { display: flex; gap: 10px; font-size: 11px; color: var(--ink-soft); }
       .shop-card-stats span { display: flex; align-items: center; gap: 3px; }
@@ -957,7 +976,8 @@ function NexaStyles() {
       .shop-hero-text { color: #fff; padding-bottom: 4px; }
       .shop-hero-name-row { display: flex; align-items: center; gap: 8px; }
       .shop-hero-name-row h1 { font-size: 21px; font-weight: 800; text-shadow: 0 2px 8px rgba(0,0,0,0.3); }
-      .verified-pill { background: rgba(232,176,75,0.95); color: var(--teal); font-size: 10.5px; font-weight: 800; padding: 3px 9px; border-radius: 999px; display: flex; align-items: center; gap: 3px; }
+      .verified-pill { background: #1D9BF0; color: #fff; font-size: 10.5px; font-weight: 800; padding: 3px 9px; border-radius: 999px; display: flex; align-items: center; gap: 3px; }
+      .verified-pill.admin-pill { background: linear-gradient(135deg, var(--gold), var(--gold-2)); }
       .shop-hero-cat { font-size: 12.5px; opacity: 0.9; margin-top: 3px; }
       .shop-hero-location { font-size: 11.5px; opacity: 0.85; display: flex; align-items: center; gap: 3px; margin-top: 3px; }
 
@@ -1356,17 +1376,24 @@ function AppShell({ currentUser, setCurrentUser, view, viewParam, goTo, onLogout
   const [menuOpen, setMenuOpen] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
   const [unreadCount, setUnreadCount] = useState(0);
+  const [unreadNotifCount, setUnreadNotifCount] = useState(0);
 
   const refreshUnread = useCallback(async () => {
     const c = await getUnreadMessagesCount(currentUser.id);
     setUnreadCount(c);
   }, [currentUser.id]);
 
+  const refreshNotifUnread = useCallback(async () => {
+    const c = await getUnreadNotificationsCount(currentUser.id);
+    setUnreadNotifCount(c);
+  }, [currentUser.id]);
+
   useEffect(() => {
     refreshUnread();
-    const interval = setInterval(refreshUnread, 15000);
+    refreshNotifUnread();
+    const interval = setInterval(() => { refreshUnread(); refreshNotifUnread(); }, 15000);
     return () => clearInterval(interval);
-  }, [refreshUnread]);
+  }, [refreshUnread, refreshNotifUnread]);
 
   const tabs = [
     { key: "feed", label: "الرئيسية", icon: Home },
@@ -1387,6 +1414,10 @@ function AppShell({ currentUser, setCurrentUser, view, viewParam, goTo, onLogout
           <div className="shell-header-actions">
             <button className="icon-btn" onClick={() => setSearchOpen(true)} title="بحث">
               <Search size={20} />
+            </button>
+            <button className="icon-btn notif-bell-btn" onClick={() => goTo("notifications")} title="الإشعارات">
+              <Bell size={20} />
+              {unreadNotifCount > 0 && <span className="nav-badge header-badge">{unreadNotifCount > 9 ? "9+" : unreadNotifCount}</span>}
             </button>
             <button className="icon-btn" onClick={() => setShowHelp(true)} title="مساعدة">
               <HelpCircle size={20} />
@@ -1422,6 +1453,7 @@ function AppShell({ currentUser, setCurrentUser, view, viewParam, goTo, onLogout
         {view === "jobDetail" && <JobDetailView jobId={viewParam} currentUser={currentUser} goTo={goTo} notify={notify} />}
         {view === "messages" && <ConversationsListView currentUser={currentUser} goTo={goTo} notify={notify} onRead={refreshUnread} />}
         {view === "chat" && <ChatView currentUser={currentUser} otherUserId={viewParam} goTo={goTo} notify={notify} onRead={refreshUnread} />}
+        {view === "notifications" && <NotificationsView currentUser={currentUser} goTo={goTo} onRead={refreshNotifUnread} />}
         {view === "profile" && (
           <ProfileView
             currentUser={currentUser}
@@ -1617,6 +1649,45 @@ function Avatar({ user, size = 40, square = false }) {
       {initials}
     </div>
   );
+}
+
+/* شارة التوثيق الزرقاء — تصميم دائرة مملوءة بعلامة صح بيضاء، أنيق مثل المنصات الكبرى */
+function VerifiedBadge({ size = 15, style }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 22 22" style={{ flexShrink: 0, ...style }}>
+      <path
+        fill="#1D9BF0"
+        d="M20.396 11c-.018-.646-.215-1.275-.57-1.816-.354-.54-.852-.972-1.438-1.246.223-.607.27-1.264.14-1.897-.131-.634-.437-1.218-.882-1.687-.47-.445-1.053-.75-1.687-.882-.633-.13-1.29-.083-1.897.14-.273-.587-.704-1.086-1.245-1.44S11.647 1.62 11 1.604c-.646.017-1.273.213-1.813.568-.54.354-.972.853-1.245 1.44-.607-.223-1.264-.27-1.897-.14-.634.131-1.218.437-1.687.882-.445.469-.749 1.053-.88 1.687-.131.633-.084 1.29.137 1.897-.586.274-1.084.706-1.438 1.246-.354.54-.551 1.17-.569 1.816.018.646.215 1.276.57 1.817.354.54.852.972 1.438 1.245-.224.607-.27 1.264-.139 1.898.131.634.435 1.218.88 1.687.469.444 1.053.749 1.687.880.633.131 1.29.083 1.897-.139.274.586.706 1.084 1.246 1.438.54.354 1.17.551 1.816.569.646-.018 1.276-.215 1.817-.57.54-.354.972-.852 1.245-1.438.607.224 1.264.27 1.898.14.634-.131 1.218-.436 1.687-.881.444-.469.748-1.053.88-1.687.131-.633.083-1.29-.14-1.897.586-.274 1.084-.706 1.438-1.246.354-.54.551-1.17.569-1.816zm-11.39 3.667-3.07-3.07 1.062-1.062 2.007 2.006 4.396-4.396 1.062 1.061-5.457 5.461z"
+      />
+    </svg>
+  );
+}
+
+/* شارة الأدمن — تصميم متميز (تاج/درع ذهبي) لتمييزه عن التوثيق العادي */
+function AdminBadge({ size = 15, style }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" style={{ flexShrink: 0, ...style }}>
+      <defs>
+        <linearGradient id="adminGrad" x1="0" y1="0" x2="1" y2="1">
+          <stop offset="0%" stopColor="#F0C36E" />
+          <stop offset="100%" stopColor="#C77F2B" />
+        </linearGradient>
+      </defs>
+      <path
+        fill="url(#adminGrad)"
+        d="M12 1l3 5 5.5-1-1.5 5.5L23 14l-4 3 1 6-6-2-2 3-2-3-6 2 1-6-4-3 4-3.5L4.5 5 10 6z"
+      />
+      <path d="M9 12.2l2 2 4-4.4" stroke="#fff" strokeWidth="1.6" fill="none" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+/* شارة ذكية: تعرض شارة الأدمن إن كان الحساب هو nexa_admin، أو شارة التوثيق العادية، أو لا شيء */
+function UserBadge({ user, size = 14, style }) {
+  if (!user) return null;
+  if (user.username === ADMIN_USERNAME) return <AdminBadge size={size} style={style} />;
+  if (user.isVerified) return <VerifiedBadge size={size} style={style} />;
+  return null;
 }
 
 /* ============================================================
@@ -1822,10 +1893,12 @@ function PostCard({ post, author, currentUser, goTo, onChanged, notify }) {
 
   const toggleLike = async () => {
     const likes = new Set(post.likes || []);
-    if (liked) likes.delete(currentUser.id);
+    const wasLiked = likes.has(currentUser.id);
+    if (wasLiked) likes.delete(currentUser.id);
     else likes.add(currentUser.id);
     const updated = { ...post, likes: [...likes] };
     await dbSet(KEYS.post(post.id), updated, true);
+    if (!wasLiked) createNotification(post.authorId, "like", currentUser.id, { postId: post.id });
     onChanged();
   };
 
@@ -1835,6 +1908,7 @@ function PostCard({ post, author, currentUser, goTo, onChanged, notify }) {
       id: uid("c"), authorId: currentUser.id, text: commentText.trim(), createdAt: Date.now(),
     }];
     await dbSet(KEYS.post(post.id), { ...post, comments }, true);
+    createNotification(post.authorId, "comment", currentUser.id, { postId: post.id });
     setCommentText("");
     onChanged();
   };
@@ -1867,7 +1941,7 @@ function PostCard({ post, author, currentUser, goTo, onChanged, notify }) {
           <div className="post-head-meta">
             <span className="post-author">
               {author?.fullName || "مستخدم نِكسا"}
-              {author?.isVerified && <CheckCircle2 size={13} className="verified-icon" style={{ marginRight: 4 }} />}
+              <UserBadge user={author} size={13} style={{ marginRight: 4 }} />
             </span>
             <span className="post-time">{timeAgo(post.createdAt)} · @{author?.username}</span>
           </div>
@@ -2052,7 +2126,7 @@ function ShopsDirectory({ currentUser, goTo, notify }) {
               <div className="shop-card-title-row">
                 <Avatar user={s.owner} size={30} />
                 <span className="shop-card-name">{s.name}</span>
-                {(s.verified || s.owner?.isVerified) && <CheckCircle2 size={14} className="verified-icon" />}
+                <UserBadge user={s.owner} size={14} />
               </div>
               <span className="shop-card-cat">{s.category}</span>
               <div className="shop-card-stats">
@@ -2129,7 +2203,11 @@ function ShopPage({ shopOwnerId, currentUser, goTo, notify }) {
           <div className="shop-hero-text">
             <div className="shop-hero-name-row">
               <h1>{shop.name}</h1>
-              {(shop.verified || owner?.isVerified) && <span className="verified-pill"><CheckCircle2 size={13} /> موثّق</span>}
+              {(shop.verified || owner?.isVerified || owner?.username === ADMIN_USERNAME) && (
+                <span className={`verified-pill ${owner?.username === ADMIN_USERNAME ? "admin-pill" : ""}`}>
+                  <UserBadge user={owner} size={13} style={{ color: "#fff" }} /> {owner?.username === ADMIN_USERNAME ? "حساب نِكسا" : "موثّق"}
+                </span>
+              )}
             </div>
             <p className="shop-hero-cat">{shop.category} · بواسطة {owner?.fullName}</p>
             {shop.location && <p className="shop-hero-location"><MapPin size={12} /> {shop.location}</p>}
@@ -2625,6 +2703,7 @@ function ProfileView({ currentUser, setCurrentUser, goTo, notify, viewUserId }) 
   const [counts, setCounts] = useState({ followers: 0, following: 0 });
   const [followBusy, setFollowBusy] = useState(false);
   const [verifyBusy, setVerifyBusy] = useState(false);
+  const [followListType, setFollowListType] = useState(null); // null | "followers" | "following"
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -2653,7 +2732,12 @@ function ProfileView({ currentUser, setCurrentUser, goTo, notify, viewUserId }) 
       if (ok) { setFollowing(false); setCounts((c) => ({ ...c, followers: Math.max(0, c.followers - 1) })); }
     } else {
       const ok = await followUser(currentUser.id, targetId);
-      if (ok) { setFollowing(true); setCounts((c) => ({ ...c, followers: c.followers + 1 })); notify(`أصبحت تتابع ${user.fullName}`); }
+      if (ok) {
+        setFollowing(true);
+        setCounts((c) => ({ ...c, followers: c.followers + 1 }));
+        notify(`أصبحت تتابع ${user.fullName}`);
+        createNotification(targetId, "follow", currentUser.id);
+      }
     }
     setFollowBusy(false);
   };
@@ -2664,6 +2748,7 @@ function ProfileView({ currentUser, setCurrentUser, goTo, notify, viewUserId }) 
     if (ok) {
       setUser((u) => ({ ...u, isVerified: !u.isVerified }));
       notify(!user.isVerified ? "تم توثيق هذا الحساب ✓" : "تم إلغاء التوثيق");
+      if (!user.isVerified) createNotification(targetId, "verify", currentUser.id);
     } else {
       notify("تعذّر تنفيذ الإجراء", "error");
     }
@@ -2691,7 +2776,7 @@ function ProfileView({ currentUser, setCurrentUser, goTo, notify, viewUserId }) 
         <div className="profile-identity">
           <h2>
             {user.fullName}
-            {user.isVerified && <CheckCircle2 size={17} className="verified-icon" style={{ marginRight: 5, verticalAlign: -2 }} />}
+            <UserBadge user={user} size={17} style={{ marginRight: 5, verticalAlign: -2 }} />
           </h2>
           <span className="profile-username">@{user.username}</span>
           {user.location && <span className="profile-location"><MapPin size={13} /> {user.location}</span>}
@@ -2700,9 +2785,13 @@ function ProfileView({ currentUser, setCurrentUser, goTo, notify, viewUserId }) 
         {user.bio && <p className="profile-bio">{user.bio}</p>}
 
         <div className="follow-counts-row">
-          <span><b>{counts.followers}</b> متابِع</span>
+          <button className="fc-clickable" onClick={() => setFollowListType("followers")}>
+            <b>{counts.followers}</b> متابِع
+          </button>
           <span className="fc-dot">·</span>
-          <span><b>{counts.following}</b> يتابع</span>
+          <button className="fc-clickable" onClick={() => setFollowListType("following")}>
+            <b>{counts.following}</b> يتابع
+          </button>
         </div>
 
         {user.socialLinks && user.socialLinks.length > 0 && (
@@ -2752,7 +2841,7 @@ function ProfileView({ currentUser, setCurrentUser, goTo, notify, viewUserId }) 
           </button>
         )}
 
-        {isAdmin && !isSelf && (
+        {isAdmin && (
           <button className={`verify-admin-btn ${user.isVerified ? "active" : ""}`} onClick={toggleVerify} disabled={verifyBusy}>
             {verifyBusy ? <Loader2 size={14} className="nx-spin" /> : <ShieldCheck size={15} />}
             {user.isVerified ? "إلغاء التوثيق" : "توثيق هذا الحساب"}
@@ -2773,6 +2862,16 @@ function ProfileView({ currentUser, setCurrentUser, goTo, notify, viewUserId }) 
           user={user}
           onClose={() => setEditOpen(false)}
           onSaved={(updated) => { setEditOpen(false); setUser(updated); setCurrentUser(updated); notify("تم تحديث ملفك الشخصي"); }}
+        />
+      )}
+
+      {followListType && (
+        <FollowListModal
+          userId={targetId}
+          type={followListType}
+          currentUser={currentUser}
+          goTo={(view, param) => { setFollowListType(null); goTo(view, param); }}
+          onClose={() => setFollowListType(null)}
         />
       )}
     </div>
@@ -3003,7 +3102,7 @@ function SearchModal({ currentUser, goTo, onClose }) {
                   <div className="search-result-body">
                     <span className="search-result-name">
                       {u.fullName}
-                      {u.isVerified && <CheckCircle2 size={13} className="verified-icon" style={{ marginRight: 4 }} />}
+                      <UserBadge user={u} size={13} style={{ marginRight: 4 }} />
                     </span>
                     <span className="search-result-sub">@{u.username}</span>
                   </div>
@@ -3083,7 +3182,7 @@ function ConversationsListView({ currentUser, goTo, notify, onRead }) {
               <div className="conv-top-row">
                 <span className="conv-name">
                   {u?.fullName || "مستخدم"}
-                  {u?.isVerified && <CheckCircle2 size={12} className="verified-icon" style={{ marginRight: 3 }} />}
+                  <UserBadge user={u} size={12} style={{ marginRight: 3 }} />
                 </span>
                 <span className="conv-time">{timeAgo(c.lastAt)}</span>
               </div>
@@ -3140,6 +3239,7 @@ function ChatView({ currentUser, otherUserId, goTo, notify, onRead }) {
       setText("");
       setImageUrl("");
       setShowImageUploader(false);
+      createNotification(otherUserId, "message", currentUser.id);
       await load();
     } else {
       notify("تعذّر إرسال الرسالة", "error");
@@ -3160,7 +3260,7 @@ function ChatView({ currentUser, otherUserId, goTo, notify, onRead }) {
           <div>
             <div className="chat-header-name">
               {otherUser?.fullName || "مستخدم"}
-              {otherUser?.isVerified && <CheckCircle2 size={12} className="verified-icon" style={{ marginRight: 3 }} />}
+              <UserBadge user={otherUser} size={12} style={{ marginRight: 3 }} />
             </div>
             <div className="chat-header-username">@{otherUser?.username}</div>
           </div>
@@ -3207,6 +3307,174 @@ function ChatView({ currentUser, otherUserId, goTo, notify, onRead }) {
           {sending ? <Loader2 size={16} className="nx-spin" /> : <Send size={16} />}
         </button>
       </div>
+    </div>
+  );
+}
+
+/* ============================================================
+   نافذة قائمة المتابعين / المتابَعين
+   ============================================================ */
+function FollowListModal({ userId, type, currentUser, goTo, onClose }) {
+  const [users, setUsers] = useState(null);
+
+  useEffect(() => {
+    (async () => {
+      const list = await getFollowListUsers(userId, type);
+      setUsers(list);
+    })();
+  }, [userId, type]);
+
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal-sheet tall" onClick={(e) => e.stopPropagation()}>
+        <div className="modal-handle" />
+        <div className="modal-head">
+          <h3>{type === "followers" ? "المتابِعون" : "يتابع"}</h3>
+          <button className="icon-btn" onClick={onClose}><X size={20} /></button>
+        </div>
+
+        {users === null && <div className="skel-block" style={{ height: 160 }} />}
+        {users && users.length === 0 && (
+          <EmptyState icon={User} title={type === "followers" ? "لا يوجد متابِعون بعد" : "لا يتابع أي حساب بعد"} />
+        )}
+        {users && users.map((u) => (
+          <div className="search-result-row" key={u.id} onClick={() => goTo("userProfile", u.id)}>
+            <Avatar user={u} size={40} />
+            <div className="search-result-body">
+              <span className="search-result-name">
+                {u.fullName}
+                <UserBadge user={u} size={13} style={{ marginRight: 4 }} />
+              </span>
+              <span className="search-result-sub">@{u.username}</span>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/* ============================================================
+   نظام الإشعارات
+   ============================================================ */
+async function createNotification(userId, type, fromUserId, extra = {}) {
+  // لا حاجة لإشعار النفس
+  if (userId === fromUserId) return true;
+  try {
+    const id = uid("notif");
+    const { error } = await supabase.from("notifications").insert({
+      id, user_id: userId, type, from_user_id: fromUserId,
+      post_id: extra.postId || null, message: extra.message || "",
+      read: false, created_at: Date.now(),
+    });
+    if (error) throw error;
+    return true;
+  } catch (e) {
+    console.error("createNotification failed", e);
+    return false;
+  }
+}
+
+async function getMyNotifications(userId) {
+  try {
+    const { data, error } = await supabase
+      .from("notifications")
+      .select("*")
+      .eq("user_id", userId)
+      .order("created_at", { ascending: false })
+      .limit(50);
+    if (error) throw error;
+    return data.map((r) => ({
+      id: r.id, type: r.type, fromUserId: r.from_user_id, postId: r.post_id,
+      message: r.message || "", read: r.read || false, createdAt: r.created_at,
+    }));
+  } catch (e) {
+    console.error("getMyNotifications failed", e);
+    return [];
+  }
+}
+
+async function getUnreadNotificationsCount(userId) {
+  try {
+    const { count, error } = await supabase
+      .from("notifications")
+      .select("id", { count: "exact", head: true })
+      .eq("user_id", userId).eq("read", false);
+    if (error) throw error;
+    return count || 0;
+  } catch {
+    return 0;
+  }
+}
+
+async function markAllNotificationsRead(userId) {
+  try {
+    await supabase.from("notifications").update({ read: true }).eq("user_id", userId).eq("read", false);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+const NOTIF_META = {
+  follow: { icon: UserPlus, text: "بدأ بمتابعتك", color: "#1D9BF0" },
+  like: { icon: Heart, text: "أعجب بمنشورك", color: "#E0245E" },
+  comment: { icon: MessageCircle, text: "علّق على منشورك", color: "#17BF63" },
+  message: { icon: MessageSquare, text: "أرسل لك رسالة", color: "var(--teal-2)" },
+  verify: { icon: ShieldCheck, text: "تم توثيق حسابك", color: "var(--gold-2)" },
+};
+
+function NotificationsView({ currentUser, goTo, onRead }) {
+  const [items, setItems] = useState(null);
+  const [usersCache, setUsersCache] = useState({});
+
+  const load = useCallback(async () => {
+    const list = await getMyNotifications(currentUser.id);
+    setItems(list);
+    const ids = [...new Set(list.map((n) => n.fromUserId).filter(Boolean))];
+    const fetched = await Promise.all(ids.map((id) => dbGet(KEYS.users(id), true)));
+    const map = {};
+    ids.forEach((id, i) => { if (fetched[i]) map[id] = fetched[i]; });
+    setUsersCache(map);
+    await markAllNotificationsRead(currentUser.id);
+    if (onRead) onRead();
+  }, [currentUser.id, onRead]);
+
+  useEffect(() => { load(); }, [load]);
+
+  const handleClick = (n) => {
+    if (n.type === "message") goTo("chat", n.fromUserId);
+    else if (n.type === "follow") goTo("userProfile", n.fromUserId);
+    else if (n.type === "like" || n.type === "comment") goTo("feed");
+    else goTo("profile");
+  };
+
+  return (
+    <div className="page-pad">
+      <PageHeader title="الإشعارات" onBack={() => goTo("feed")} />
+      {items === null && <div className="skel-block" style={{ height: 200 }} />}
+      {items && items.length === 0 && (
+        <EmptyState icon={Bell} title="لا توجد إشعارات بعد" hint="ستظهر هنا أي متابعة جديدة، رسالة، أو تفاعل مع منشوراتك" />
+      )}
+      {items && items.map((n) => {
+        const meta = NOTIF_META[n.type] || NOTIF_META.follow;
+        const Icon = meta.icon;
+        const fromUser = usersCache[n.fromUserId];
+        return (
+          <div key={n.id} className={`notif-row ${!n.read ? "unread" : ""}`} onClick={() => handleClick(n)}>
+            <div className="notif-icon" style={{ background: meta.color }}>
+              <Icon size={15} color="#fff" />
+            </div>
+            <Avatar user={fromUser} size={36} />
+            <div className="notif-body">
+              <span className="notif-text">
+                <b>{fromUser?.fullName || "مستخدم نِكسا"}</b> {meta.text}
+              </span>
+              <span className="notif-time">{timeAgo(n.createdAt)}</span>
+            </div>
+          </div>
+        );
+      })}
     </div>
   );
 }
