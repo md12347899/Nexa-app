@@ -428,6 +428,74 @@ async function setUserVerified(userId, verified, requesterUsername) {
   }
 }
 
+// ---------- الستوريز ----------
+const STORY_LIFETIME_MS = 24 * 60 * 60 * 1000; // 24 ساعة
+
+async function createStory(authorId, mediaUrl, mediaType = "image") {
+  try {
+    const id = uid("story");
+    const { error } = await supabase.from("stories").insert({
+      id, author_id: authorId, media_url: mediaUrl, media_type: mediaType,
+      views: [], created_at: Date.now(),
+    });
+    if (error) throw error;
+    return true;
+  } catch (e) {
+    console.error("createStory failed", e);
+    lastDbErrorMessage = (e && e.message) ? e.message : String(e);
+    return false;
+  }
+}
+
+async function getActiveStoriesGrouped() {
+  try {
+    const cutoff = Date.now() - STORY_LIFETIME_MS;
+    const { data, error } = await supabase
+      .from("stories")
+      .select("*")
+      .gt("created_at", cutoff)
+      .order("created_at", { ascending: true });
+    if (error) throw error;
+    const byAuthor = new Map();
+    for (const r of data) {
+      const story = {
+        id: r.id, authorId: r.author_id, mediaUrl: r.media_url, mediaType: r.media_type,
+        views: r.views || [], createdAt: r.created_at,
+      };
+      if (!byAuthor.has(story.authorId)) byAuthor.set(story.authorId, []);
+      byAuthor.get(story.authorId).push(story);
+    }
+    return byAuthor; // Map<authorId, story[]>
+  } catch (e) {
+    console.error("getActiveStoriesGrouped failed", e);
+    return new Map();
+  }
+}
+
+async function markStoryViewed(storyId, viewerId) {
+  try {
+    const { data } = await supabase.from("stories").select("views").eq("id", storyId).maybeSingle();
+    const views = new Set(data?.views || []);
+    if (!views.has(viewerId)) {
+      views.add(viewerId);
+      await supabase.from("stories").update({ views: [...views] }).eq("id", storyId);
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function deleteStory(storyId, authorId, requesterId) {
+  if (authorId !== requesterId) return false;
+  try {
+    await supabase.from("stories").delete().eq("id", storyId);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 // ---------- الرسائل الخاصة ----------
 function conversationId(userIdA, userIdB) {
   return [userIdA, userIdB].sort().join("__");
@@ -1038,6 +1106,13 @@ function NexaStyles() {
       .spc-title { font-size: 11.5px; font-weight: 700; color: var(--gold-2); margin-bottom: 3px; }
       .spc-value { font-size: 13px; line-height: 1.6; }
 
+      .shop-tabs-bar { display: flex; gap: 8px; padding: 16px 16px 4px; }
+      .shop-tab {
+        flex: 1; background: #fff; border: 1.5px solid var(--line); border-radius: 12px; padding: 10px;
+        font-size: 12.5px; font-weight: 700; color: var(--ink-soft);
+      }
+      .shop-tab.active { background: var(--gold-2); border-color: var(--gold-2); color: #fff; }
+
       .shop-section-head { display: flex; align-items: center; justify-content: space-between; padding: 20px 18px 12px; }
       .shop-section-head h3 { font-size: 15.5px; font-weight: 800; }
       .add-product-btn { background: var(--teal); color: #fff; border: none; border-radius: 10px; padding: 7px 12px; font-size: 12px; font-weight: 700; display: flex; align-items: center; gap: 5px; }
@@ -1128,6 +1203,13 @@ function NexaStyles() {
       .profile-posts-section { padding: 22px 16px 0; }
       .profile-posts-section .section-title { display: flex; align-items: center; gap: 6px; margin-bottom: 12px; color: var(--ink-soft); text-transform: uppercase; font-size: 12px; letter-spacing: 0.3px; }
 
+      .profile-tabs-bar { display: flex; gap: 8px; padding: 16px 16px 0; }
+      .profile-tab {
+        flex: 1; display: flex; align-items: center; justify-content: center; gap: 6px; background: #fff;
+        border: 1.5px solid var(--line); border-radius: 12px; padding: 10px; font-size: 12.5px; font-weight: 700; color: var(--ink-soft);
+      }
+      .profile-tab.active { background: var(--teal); border-color: var(--teal); color: #fff; }
+
       /* ---- محرر الروابط الاجتماعية ---- */
       .social-link-row { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
       .social-link-icon { width: 34px; height: 34px; border-radius: 10px; background: var(--paper-2); color: var(--teal-2); display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
@@ -1203,6 +1285,9 @@ function NexaStyles() {
       .search-result-price { font-size: 12px; font-weight: 700; color: var(--gold-2); flex-shrink: 0; }
 
       /* ---- قائمة المحادثات ---- */
+      .conv-search-row { position: relative; margin-bottom: 10px; }
+      .conv-search-row .search-icon { position: absolute; right: 13px; top: 50%; transform: translateY(-50%); color: var(--ink-soft); }
+      .conv-search-row .search-input { padding-right: 38px; }
       .conv-row { display: flex; align-items: center; gap: 12px; padding: 12px 6px; border-bottom: 1px solid var(--line); cursor: pointer; }
       .conv-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
       .conv-top-row { display: flex; justify-content: space-between; align-items: center; }
@@ -1260,6 +1345,65 @@ function NexaStyles() {
         box-shadow: 0 1px 3px rgba(0,0,0,0.25); transition: transform .2s;
       }
       .toggle-switch.on .toggle-knob { transform: translateX(-18px); }
+
+      /* ---- شريط الستوريز ---- */
+      .stories-bar { display: flex; gap: 14px; overflow-x: auto; padding: 4px 2px 14px; scrollbar-width: none; }
+      .stories-bar::-webkit-scrollbar { display: none; }
+      .story-item { display: flex; flex-direction: column; align-items: center; gap: 5px; flex-shrink: 0; cursor: pointer; width: 64px; }
+      .story-ring { position: relative; width: 60px; height: 60px; border-radius: 50%; display: flex; align-items: center; justify-content: center; padding: 2px; }
+      .story-ring.has-story { background: linear-gradient(135deg, var(--gold), var(--gold-2)); }
+      .story-ring.add-story { background: var(--paper-2); border: 1.5px dashed var(--line); }
+      .story-ring .avatar-img, .story-ring .avatar-fallback { border: 2px solid #fff; }
+      .story-add-badge {
+        position: absolute; bottom: -2px; left: -2px; width: 20px; height: 20px; border-radius: 50%; background: var(--teal);
+        color: #fff; display: flex; align-items: center; justify-content: center; border: 2px solid #fff;
+      }
+      .story-label { font-size: 11px; color: var(--ink-soft); max-width: 60px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .story-skel { width: 60px; height: 60px; border-radius: 50%; background: linear-gradient(90deg, #ECE6D6 25%, #F4EFE2 37%, #ECE6D6 63%); background-size: 400% 100%; animation: shimmer 1.4s ease infinite; flex-shrink: 0; }
+
+      /* ---- نافذة عرض القصة (كامل الشاشة) ---- */
+      .story-viewer-overlay { position: fixed; inset: 0; background: #000; z-index: 300; display: flex; align-items: center; justify-content: center; }
+      .story-viewer { position: relative; width: 100%; max-width: 480px; height: 100%; background: #111; overflow: hidden; }
+      .story-progress-row { position: absolute; top: 10px; left: 10px; right: 10px; display: flex; gap: 4px; z-index: 5; }
+      .story-progress-track { flex: 1; height: 3px; background: rgba(255,255,255,0.3); border-radius: 3px; overflow: hidden; }
+      .story-progress-fill { height: 100%; width: 0%; background: #fff; }
+      .story-progress-fill.done { width: 100%; }
+      .story-progress-fill.active { width: 100%; animation: storyFill 5s linear forwards; }
+      @keyframes storyFill { from { width: 0%; } to { width: 100%; } }
+      .story-viewer-head { position: absolute; top: 22px; left: 12px; right: 12px; display: flex; align-items: center; gap: 9px; z-index: 5; }
+      .story-viewer-name { color: #fff; font-size: 13px; font-weight: 700; }
+      .story-viewer-time { color: rgba(255,255,255,0.75); font-size: 11.5px; }
+      .story-nav-zones { position: absolute; inset: 0; display: flex; z-index: 3; }
+      .story-nav-zone { flex: 1; }
+      .story-media { width: 100%; height: 100%; object-fit: contain; background: #000; }
+      .story-views-bar { position: absolute; bottom: 16px; left: 16px; color: #fff; font-size: 12.5px; display: flex; align-items: center; gap: 5px; background: rgba(0,0,0,0.4); padding: 6px 12px; border-radius: 999px; z-index: 5; }
+
+      /* ---- تبويبات الخلاصة الفرعية ---- */
+      .feed-tabs-row { display: flex; gap: 7px; overflow-x: auto; padding-bottom: 4px; margin-bottom: 14px; scrollbar-width: none; }
+      .feed-tabs-row::-webkit-scrollbar { display: none; }
+      .feed-tab { flex-shrink: 0; background: #fff; border: 1.5px solid var(--line); border-radius: 999px; padding: 7px 15px; font-size: 12.5px; font-weight: 700; color: var(--ink-soft); white-space: nowrap; }
+      .feed-tab.active { background: var(--teal); border-color: var(--teal); color: #fff; }
+
+      /* ---- معالج خطوات إضافة المنتج ---- */
+      .step-indicator-row { display: flex; align-items: center; margin-bottom: 20px; padding: 0 2px; }
+      .step-dot-wrap { display: flex; flex-direction: column; align-items: center; gap: 5px; }
+      .step-dot {
+        width: 28px; height: 28px; border-radius: 50%; background: var(--paper-2); color: var(--ink-soft);
+        display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 700;
+        border: 2px solid var(--line); transition: all .2s;
+      }
+      .step-dot.active { background: var(--gold-2); color: #fff; border-color: var(--gold-2); }
+      .step-dot.done { background: var(--teal); color: #fff; border-color: var(--teal); }
+      .step-dot-label { font-size: 10px; color: var(--ink-soft); font-weight: 600; white-space: nowrap; }
+      .step-connector { flex: 1; height: 2px; background: var(--line); margin: 0 4px; margin-bottom: 16px; }
+      .step-connector.done { background: var(--teal); }
+      .wizard-step { min-height: 200px; }
+      .wizard-actions { display: flex; gap: 10px; margin-top: 16px; }
+      .review-card { background: var(--paper-2); border-radius: 14px; overflow: hidden; border: 1px solid var(--line); }
+      .review-image { width: 100%; height: 160px; object-fit: cover; display: block; }
+      .review-body { padding: 14px; }
+      .review-body h4 { font-size: 15px; font-weight: 800; margin-bottom: 4px; }
+      .review-desc { font-size: 12.5px; color: var(--ink-soft); line-height: 1.7; margin-top: 8px; }
 
       @media (max-width: 380px) {
         .shop-grid, .products-grid { grid-template-columns: 1fr 1fr; gap: 9px; }
@@ -1674,6 +1818,9 @@ function FeedView({ currentUser, goTo, notify }) {
   const [posts, setPosts] = useState(null);
   const [composerOpen, setComposerOpen] = useState(false);
   const [usersCache, setUsersCache] = useState({});
+  const [activeTab, setActiveTab] = useState("all"); // all | recent | shops | following
+  const [followingIds, setFollowingIds] = useState(null);
+  const [shopOwnerIds, setShopOwnerIds] = useState(null);
 
   const loadPosts = useCallback(async () => {
     const ids = (await dbGet(KEYS.posts, true)) || [];
@@ -1690,7 +1837,17 @@ function FeedView({ currentUser, goTo, notify }) {
     }
   }, [usersCache]);
 
-  useEffect(() => { loadPosts(); }, []);
+  const loadFilters = useCallback(async () => {
+    const [followIds, userIdx] = await Promise.all([
+      getFollowingIds(currentUser.id),
+      dbGet(KEYS.userIndex, true),
+    ]);
+    setFollowingIds(new Set(followIds));
+    const allShops = await Promise.all((userIdx || []).map((id) => dbGet(KEYS.shop(id), true)));
+    setShopOwnerIds(new Set(allShops.filter((s) => s && s.published).map((s) => s.ownerId)));
+  }, [currentUser.id]);
+
+  useEffect(() => { loadPosts(); loadFilters(); }, []);
 
   const handleCreated = () => {
     setComposerOpen(false);
@@ -1698,8 +1855,33 @@ function FeedView({ currentUser, goTo, notify }) {
     notify("تم نشر منشورك");
   };
 
+  const filteredPosts = useMemo(() => {
+    if (!posts) return null;
+    if (activeTab === "recent") return posts.slice(0, 20);
+    if (activeTab === "shops") return posts.filter((p) => shopOwnerIds?.has(p.authorId));
+    if (activeTab === "following") return posts.filter((p) => followingIds?.has(p.authorId));
+    return posts;
+  }, [posts, activeTab, followingIds, shopOwnerIds]);
+
+  const feedTabs = [
+    { key: "all", label: "الكل" },
+    { key: "recent", label: "الأحدث" },
+    { key: "shops", label: "متاجر مميزة" },
+    { key: "following", label: "متابَع" },
+  ];
+
   return (
     <div className="feed-wrap">
+      <StoriesBar currentUser={currentUser} notify={notify} />
+
+      <div className="feed-tabs-row">
+        {feedTabs.map((t) => (
+          <button key={t.key} className={`feed-tab ${activeTab === t.key ? "active" : ""}`} onClick={() => setActiveTab(t.key)}>
+            {t.label}
+          </button>
+        ))}
+      </div>
+
       <div className="composer-trigger" onClick={() => setComposerOpen(true)}>
         <div className="composer-avatar"><Avatar user={currentUser} size={38} /></div>
         <div className="composer-fake-input">شاركنا بخاطرك، منتجك، أو مهارتك...</div>
@@ -1712,11 +1894,11 @@ function FeedView({ currentUser, goTo, notify }) {
         <button onClick={() => setComposerOpen(true)}><Megaphone size={16} /> إعلان منتج</button>
       </div>
 
-      {posts === null && <FeedSkeleton />}
-      {posts && posts.length === 0 && (
-        <EmptyState icon={MessageCircle} title="لا توجد منشورات بعد" hint="كن أول من يشارك شيئًا في مجتمع نِكسا" />
+      {filteredPosts === null && <FeedSkeleton />}
+      {filteredPosts && filteredPosts.length === 0 && (
+        <EmptyState icon={MessageCircle} title="لا توجد منشورات هنا" hint={activeTab === "following" ? "تابع بعض الحسابات لترى منشوراتها هنا" : "كن أول من يشارك شيئًا في مجتمع نِكسا"} />
       )}
-      {posts && posts.map((p) => (
+      {filteredPosts && filteredPosts.map((p) => (
         <PostCard key={p.id} post={p} author={usersCache[p.authorId]} currentUser={currentUser} goTo={goTo} onChanged={loadPosts} notify={notify} />
       ))}
 
@@ -1743,6 +1925,214 @@ function FeedSkeleton() {
           <div className="skel-block" />
         </div>
       ))}
+    </div>
+  );
+}
+
+/* ============================================================
+   شريط الستوريز
+   ============================================================ */
+function StoriesBar({ currentUser, notify }) {
+  const [storiesMap, setStoriesMap] = useState(null); // Map<authorId, story[]>
+  const [usersCache, setUsersCache] = useState({});
+  const [composerOpen, setComposerOpen] = useState(false);
+  const [viewingAuthorId, setViewingAuthorId] = useState(null);
+
+  const load = useCallback(async () => {
+    const map = await getActiveStoriesGrouped();
+    setStoriesMap(map);
+    const ids = [...map.keys()];
+    const fetched = await Promise.all(ids.map((id) => dbGet(KEYS.users(id), true)));
+    const cache = {};
+    ids.forEach((id, i) => { if (fetched[i]) cache[id] = fetched[i]; });
+    setUsersCache(cache);
+  }, []);
+
+  useEffect(() => { load(); }, [load]);
+
+  if (storiesMap === null) {
+    return (
+      <div className="stories-bar">
+        {[1, 2, 3, 4].map((i) => <div key={i} className="story-skel" />)}
+      </div>
+    );
+  }
+
+  const authorIds = [...storiesMap.keys()].filter((id) => id !== currentUser.id);
+  const myStories = storiesMap.get(currentUser.id) || [];
+
+  return (
+    <div className="stories-bar">
+      <div className="story-item" onClick={() => (myStories.length ? setViewingAuthorId(currentUser.id) : setComposerOpen(true))}>
+        <div className={`story-ring ${myStories.length ? "has-story" : "add-story"}`}>
+          <Avatar user={currentUser} size={56} />
+          {!myStories.length && (
+            <span className="story-add-badge" onClick={(e) => { e.stopPropagation(); setComposerOpen(true); }}>
+              <Plus size={12} />
+            </span>
+          )}
+        </div>
+        <span className="story-label">إضافة</span>
+      </div>
+
+      {authorIds.map((id) => {
+        const u = usersCache[id];
+        return (
+          <div className="story-item" key={id} onClick={() => setViewingAuthorId(id)}>
+            <div className="story-ring has-story">
+              <Avatar user={u} size={56} />
+            </div>
+            <span className="story-label">{(u?.fullName || "مستخدم").split(" ")[0]}</span>
+          </div>
+        );
+      })}
+
+      {composerOpen && (
+        <StoryComposer
+          currentUser={currentUser}
+          onClose={() => setComposerOpen(false)}
+          onCreated={() => { setComposerOpen(false); load(); notify("تم نشر قصتك"); }}
+        />
+      )}
+      {viewingAuthorId && (
+        <StoryViewer
+          authorId={viewingAuthorId}
+          stories={storiesMap.get(viewingAuthorId) || []}
+          author={usersCache[viewingAuthorId] || currentUser}
+          currentUser={currentUser}
+          onClose={() => { setViewingAuthorId(null); load(); }}
+          notify={notify}
+        />
+      )}
+    </div>
+  );
+}
+
+function StoryComposer({ currentUser, onClose, onCreated }) {
+  const [mediaUrl, setMediaUrl] = useState("");
+  const [mediaType, setMediaType] = useState("image");
+  const [posting, setPosting] = useState(false);
+  const [error, setError] = useState("");
+
+  const submit = async () => {
+    if (!mediaUrl) { setError("أضف صورة أو فيديو للقصة"); return; }
+    setPosting(true);
+    const ok = await createStory(currentUser.id, mediaUrl, mediaType);
+    setPosting(false);
+    if (ok) onCreated();
+    else setError("تعذّر نشر القصة، حاول مجددًا");
+  };
+
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal-sheet" onClick={(e) => e.stopPropagation()}>
+        <div className="modal-handle" />
+        <div className="modal-head">
+          <h3>قصة جديدة</h3>
+          <button className="icon-btn" onClick={onClose}><X size={20} /></button>
+        </div>
+        <div className="composer-type-row">
+          <button className={`type-chip ${mediaType === "image" ? "active" : ""}`} onClick={() => { setMediaType("image"); setMediaUrl(""); }}>
+            <ImageIcon size={15} /> صورة
+          </button>
+          <button className={`type-chip ${mediaType === "video" ? "active" : ""}`} onClick={() => { setMediaType("video"); setMediaUrl(""); }}>
+            <Video size={15} /> فيديو
+          </button>
+        </div>
+        <MediaUploader
+          value={mediaUrl}
+          onChange={setMediaUrl}
+          folder="stories"
+          accept={mediaType === "video" ? "video/*" : "image/*"}
+          height={220}
+        />
+        {error && <div className="field-error"><AlertCircle size={14} /> {error}</div>}
+        <button className="btn-primary btn-gold" style={{ marginTop: 14 }} onClick={submit} disabled={posting}>
+          {posting ? <Loader2 size={18} className="nx-spin" /> : "نشر القصة"}
+        </button>
+        <p className="uploader-hint" style={{ textAlign: "center" }}>تختفي القصة تلقائيًا بعد 24 ساعة</p>
+      </div>
+    </div>
+  );
+}
+
+function StoryViewer({ authorId, stories, author, currentUser, onClose, notify }) {
+  const [index, setIndex] = useState(0);
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const timerRef = useRef(null);
+  const isOwner = authorId === currentUser.id;
+  const current = stories[index];
+
+  useEffect(() => {
+    if (!current) { onClose(); return; }
+    markStoryViewed(current.id, currentUser.id);
+    clearTimeout(timerRef.current);
+    timerRef.current = setTimeout(() => {
+      if (index < stories.length - 1) setIndex((i) => i + 1);
+      else onClose();
+    }, current.mediaType === "video" ? 8000 : 5000);
+    return () => clearTimeout(timerRef.current);
+  }, [index, current]);
+
+  if (!current) return null;
+
+  const handleDelete = async () => {
+    await deleteStory(current.id, current.authorId, currentUser.id);
+    notify("تم حذف القصة");
+    if (stories.length === 1) onClose();
+    else setIndex((i) => Math.max(0, i - 1));
+    setConfirmDelete(false);
+  };
+
+  return (
+    <div className="story-viewer-overlay" onClick={onClose}>
+      <div className="story-viewer" onClick={(e) => e.stopPropagation()}>
+        <div className="story-progress-row">
+          {stories.map((s, i) => (
+            <div key={s.id} className="story-progress-track">
+              <div className={`story-progress-fill ${i < index ? "done" : i === index ? "active" : ""}`} />
+            </div>
+          ))}
+        </div>
+        <div className="story-viewer-head">
+          <Avatar user={author} size={32} />
+          <span className="story-viewer-name">{author?.fullName || "مستخدم"}</span>
+          <span className="story-viewer-time">{timeAgo(current.createdAt)}</span>
+          <div style={{ flex: 1 }} />
+          {isOwner && (
+            <button className="icon-btn" style={{ color: "#fff" }} onClick={() => setConfirmDelete(true)}><Trash2 size={18} /></button>
+          )}
+          <button className="icon-btn" style={{ color: "#fff" }} onClick={onClose}><X size={22} /></button>
+        </div>
+
+        <div className="story-nav-zones">
+          <div className="story-nav-zone" onClick={() => setIndex((i) => Math.max(0, i - 1))} />
+          <div className="story-nav-zone" onClick={() => (index < stories.length - 1 ? setIndex((i) => i + 1) : onClose())} />
+        </div>
+
+        {current.mediaType === "video" ? (
+          <video src={current.mediaUrl} className="story-media" autoPlay playsInline />
+        ) : (
+          <img src={current.mediaUrl} className="story-media" alt="" />
+        )}
+
+        {isOwner && (
+          <div className="story-views-bar">
+            <Eye size={14} /> {current.views?.length || 0} مشاهدة
+          </div>
+        )}
+      </div>
+
+      {confirmDelete && (
+        <ConfirmModal
+          title="حذف القصة؟"
+          text="سيتم حذف هذه القصة نهائيًا."
+          confirmLabel="حذف"
+          danger
+          onConfirm={handleDelete}
+          onCancel={() => setConfirmDelete(false)}
+        />
+      )}
     </div>
   );
 }
@@ -2266,6 +2656,8 @@ function ShopPage({ shopOwnerId, currentUser, goTo, notify }) {
   const [loading, setLoading] = useState(true);
   const [editOpen, setEditOpen] = useState(false);
   const [productModal, setProductModal] = useState(null); // null | {} | product
+  const [shopTab, setShopTab] = useState("products"); // posts | about | products
+  const [shopPosts, setShopPosts] = useState(null);
   const isOwner = currentUser.id === shopOwnerId;
 
   const load = useCallback(async () => {
@@ -2276,7 +2668,13 @@ function ShopPage({ shopOwnerId, currentUser, goTo, notify }) {
     setLoading(false);
   }, [shopOwnerId]);
 
-  useEffect(() => { load(); }, [load]);
+  const loadShopPosts = useCallback(async () => {
+    const ids = (await dbGet(KEYS.posts, true)) || [];
+    const all = await Promise.all(ids.map((id) => dbGet(KEYS.post(id), true)));
+    setShopPosts(all.filter((p) => p && p.authorId === shopOwnerId).sort((a, b) => b.createdAt - a.createdAt));
+  }, [shopOwnerId]);
+
+  useEffect(() => { load(); loadShopPosts(); }, [load, loadShopPosts]);
 
   if (loading) {
     return <div className="page-pad"><PageHeader title="المتجر" onBack={() => goTo("shops")} /><div className="skel-block" style={{ height: 200 }} /></div>;
@@ -2337,43 +2735,69 @@ function ShopPage({ shopOwnerId, currentUser, goTo, notify }) {
         <div><b>{shop.salesCount || 0}</b><span>عملية</span></div>
       </div>
 
-      {shop.description && <p className="shop-description">{shop.description}</p>}
+      <div className="shop-tabs-bar">
+        <button className={`shop-tab ${shopTab === "posts" ? "active" : ""}`} onClick={() => setShopTab("posts")}>المنشورات</button>
+        <button className={`shop-tab ${shopTab === "about" ? "active" : ""}`} onClick={() => setShopTab("about")}>المتجر</button>
+        <button className={`shop-tab ${shopTab === "products" ? "active" : ""}`} onClick={() => setShopTab("products")}>المنتجات</button>
+      </div>
 
-      {shop.paymentInfo && (
-        <div className="shop-payment-card">
-          <DollarSign size={16} />
-          <div>
-            <div className="spc-title">طريقة الدفع / التواصل للشراء</div>
-            <div className="spc-value">{shop.paymentInfo}</div>
-          </div>
+      {shopTab === "about" && (
+        <>
+          {shop.description && <p className="shop-description">{shop.description}</p>}
+          {shop.paymentInfo && (
+            <div className="shop-payment-card">
+              <DollarSign size={16} />
+              <div>
+                <div className="spc-title">طريقة الدفع / التواصل للشراء</div>
+                <div className="spc-value">{shop.paymentInfo}</div>
+              </div>
+            </div>
+          )}
+          {!shop.description && !shop.paymentInfo && (
+            <EmptyState icon={Store} title="لا توجد معلومات إضافية بعد" />
+          )}
+        </>
+      )}
+
+      {shopTab === "posts" && (
+        <div style={{ padding: "0 16px" }}>
+          {shopPosts === null && <div className="skel-block" style={{ height: 120 }} />}
+          {shopPosts && shopPosts.length === 0 && <EmptyState icon={MessageCircle} title="لا توجد منشورات من هذا المتجر بعد" />}
+          {shopPosts && shopPosts.map((p) => (
+            <PostCard key={p.id} post={p} author={owner} currentUser={currentUser} goTo={goTo} onChanged={loadShopPosts} notify={notify} />
+          ))}
         </div>
       )}
 
-      <div className="shop-section-head">
-        <h3>المنتجات والخدمات</h3>
-        {isOwner && (
-          <button className="add-product-btn" onClick={() => setProductModal({})}>
-            <Plus size={15} /> إضافة منتج
-          </button>
-        )}
-      </div>
+      {shopTab === "products" && (
+        <>
+          <div className="shop-section-head">
+            <h3>المنتجات والخدمات</h3>
+            {isOwner && (
+              <button className="add-product-btn" onClick={() => setProductModal({})}>
+                <Plus size={15} /> إضافة منتج
+              </button>
+            )}
+          </div>
 
-      {(!shop.products || shop.products.length === 0) ? (
-        <EmptyState icon={ShoppingBag} title="لا توجد منتجات بعد" hint={isOwner ? "أضف أول منتج أو خدمة لمتجرك" : "هذا المتجر لم يضف منتجات بعد"} />
-      ) : (
-        <div className="products-grid">
-          {shop.products.map((p) => (
-            <div className="product-card" key={p.id} onClick={() => isOwner ? setProductModal(p) : setProductModal({ ...p, viewOnly: true })}>
-              <div className="product-img" style={p.image ? { backgroundImage: `url(${p.image})` } : {}}>
-                {!p.image && <ImageIcon size={22} />}
-              </div>
-              <div className="product-info">
-                <span className="product-name">{p.name}</span>
-                {p.price && <span className="product-price">{p.price}</span>}
-              </div>
+          {(!shop.products || shop.products.length === 0) ? (
+            <EmptyState icon={ShoppingBag} title="لا توجد منتجات بعد" hint={isOwner ? "أضف أول منتج أو خدمة لمتجرك" : "هذا المتجر لم يضف منتجات بعد"} />
+          ) : (
+            <div className="products-grid">
+              {shop.products.map((p) => (
+                <div className="product-card" key={p.id} onClick={() => isOwner ? setProductModal(p) : setProductModal({ ...p, viewOnly: true })}>
+                  <div className="product-img" style={p.image ? { backgroundImage: `url(${p.image})` } : {}}>
+                    {!p.image && <ImageIcon size={22} />}
+                  </div>
+                  <div className="product-info">
+                    <span className="product-name">{p.name}</span>
+                    {p.price && <span className="product-price">{p.price}</span>}
+                  </div>
+                </div>
+              ))}
             </div>
-          ))}
-        </div>
+          )}
+        </>
       )}
 
       {editOpen && <ShopEditModal shop={shop} ownerId={shopOwnerId} onClose={() => setEditOpen(false)} onSaved={() => { setEditOpen(false); load(); notify("تم تحديث متجرك"); }} />}
@@ -2409,11 +2833,24 @@ function ShopPage({ shopOwnerId, currentUser, goTo, notify }) {
 function ProductModal({ product, isOwner, onClose, onSave, onDelete }) {
   const isNew = !product.id;
   const viewOnly = product.viewOnly;
+  const [step, setStep] = useState(1); // 1=المنتج 2=التفاصيل 3=الشحن 4=نشر
   const [name, setName] = useState(product.name || "");
+  const [image, setImage] = useState(product.image || "");
   const [price, setPrice] = useState(product.price || "");
   const [desc, setDesc] = useState(product.description || "");
-  const [image, setImage] = useState(product.image || "");
+  const [category, setCategory] = useState(product.category || "");
+  const [shippingInfo, setShippingInfo] = useState(product.shippingInfo || "");
   const [error, setError] = useState("");
+
+  const totalSteps = 4;
+  const stepLabels = ["المنتج", "التفاصيل", "الشحن", "نشر"];
+
+  const goNext = () => {
+    setError("");
+    if (step === 1 && !name.trim()) { setError("اكتب اسم المنتج أولًا"); return; }
+    setStep((s) => Math.min(totalSteps, s + 1));
+  };
+  const goBack = () => setStep((s) => Math.max(1, s - 1));
 
   const save = () => {
     if (!name.trim()) { setError("اكتب اسم المنتج"); return; }
@@ -2423,53 +2860,149 @@ function ProductModal({ product, isOwner, onClose, onSave, onDelete }) {
       price: price.trim(),
       description: desc.trim(),
       image: image.trim(),
+      category: category.trim(),
+      shippingInfo: shippingInfo.trim(),
       createdAt: product.createdAt || Date.now(),
     });
   };
 
+  if (viewOnly) {
+    return (
+      <div className="modal-overlay" onClick={onClose}>
+        <div className="modal-sheet" onClick={(e) => e.stopPropagation()}>
+          <div className="modal-handle" />
+          <div className="modal-head">
+            <h3>تفاصيل المنتج</h3>
+            <button className="icon-btn" onClick={onClose}><X size={20} /></button>
+          </div>
+          {image && <img src={image} alt="" className="composer-preview" style={{ marginBottom: 10 }} />}
+          <h4 style={{ margin: "4px 0" }}>{name}</h4>
+          {price && <div className="product-price" style={{ fontSize: 15, marginBottom: 8 }}>{price}</div>}
+          <p style={{ color: "var(--ink-soft)", lineHeight: 1.7, fontSize: 14 }}>{desc || "لا يوجد وصف."}</p>
+          {shippingInfo && (
+            <div className="shop-payment-card" style={{ marginTop: 12, marginInline: 0 }}>
+              <ShoppingBag size={16} />
+              <div>
+                <div className="spc-title">معلومات الشحن</div>
+                <div className="spc-value">{shippingInfo}</div>
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="modal-overlay" onClick={onClose}>
-      <div className="modal-sheet" onClick={(e) => e.stopPropagation()}>
+      <div className="modal-sheet tall" onClick={(e) => e.stopPropagation()}>
         <div className="modal-handle" />
         <div className="modal-head">
-          <h3>{viewOnly ? "تفاصيل المنتج" : isNew ? "منتج جديد" : "تعديل المنتج"}</h3>
+          <h3>{isNew ? "منتج جديد" : "تعديل المنتج"}</h3>
           <button className="icon-btn" onClick={onClose}><X size={20} /></button>
         </div>
 
-        {viewOnly && image && <img src={image} alt="" className="composer-preview" style={{ marginBottom: 10 }} />}
+        <div className="step-indicator-row">
+          {stepLabels.map((label, i) => {
+            const num = i + 1;
+            const isDone = num < step;
+            const isActive = num === step;
+            return (
+              <React.Fragment key={num}>
+                <div className="step-dot-wrap">
+                  <div className={`step-dot ${isActive ? "active" : ""} ${isDone ? "done" : ""}`}>
+                    {isDone ? <CheckCircle2 size={14} /> : num}
+                  </div>
+                  <span className="step-dot-label">{label}</span>
+                </div>
+                {num < totalSteps && <div className={`step-connector ${isDone ? "done" : ""}`} />}
+              </React.Fragment>
+            );
+          })}
+        </div>
 
-        {viewOnly ? (
-          <div>
-            <h4 style={{ margin: "4px 0" }}>{name}</h4>
-            {price && <div className="product-price" style={{ fontSize: 15, marginBottom: 8 }}>{price}</div>}
-            <p style={{ color: "var(--ink-soft)", lineHeight: 1.7, fontSize: 14 }}>{desc || "لا يوجد وصف."}</p>
-          </div>
-        ) : (
-          <>
+        {step === 1 && (
+          <div className="wizard-step">
             <div className="field-group">
-              <label className="field-label">صورة المنتج</label>
-              <MediaUploader value={image} onChange={setImage} folder="products" height={150} />
+              <label className="field-label">صور المنتج</label>
+              <MediaUploader value={image} onChange={setImage} folder="products" height={170} />
             </div>
             <div className="field-group">
               <label className="field-label">اسم المنتج أو الخدمة</label>
               <input className="field-input" value={name} onChange={(e) => setName(e.target.value)} placeholder="مثال: تصميم شعار احترافي" />
             </div>
+          </div>
+        )}
+
+        {step === 2 && (
+          <div className="wizard-step">
             <div className="field-group">
               <label className="field-label">السعر (اختياري)</label>
               <input className="field-input" value={price} onChange={(e) => setPrice(e.target.value)} placeholder="مثال: 15$ أو يُحدد بعد التواصل" />
             </div>
             <div className="field-group">
-              <label className="field-label">الوصف</label>
-              <textarea className="field-input" rows={3} value={desc} onChange={(e) => setDesc(e.target.value)} placeholder="اشرح منتجك أو خدمتك بإيجاز" />
+              <label className="field-label">التصنيف (اختياري)</label>
+              <input className="field-input" value={category} onChange={(e) => setCategory(e.target.value)} placeholder="مثال: تصميم، إلكترونيات، أزياء" />
             </div>
-            {error && <div className="field-error"><AlertCircle size={14} /> {error}</div>}
-            <button className="btn-primary" onClick={save} style={{ marginTop: 8 }}>حفظ المنتج</button>
-            {!isNew && (
-              <button className="btn-ghost danger-ghost" style={{ marginTop: 10 }} onClick={() => onDelete(product.id)}>
-                <Trash2 size={15} /> حذف المنتج
-              </button>
-            )}
-          </>
+            <div className="field-group">
+              <label className="field-label">الوصف</label>
+              <textarea className="field-input" rows={4} value={desc} onChange={(e) => setDesc(e.target.value)} placeholder="اشرح منتجك أو خدمتك بإيجاز" />
+            </div>
+          </div>
+        )}
+
+        {step === 3 && (
+          <div className="wizard-step">
+            <div className="field-group">
+              <label className="field-label">معلومات الشحن أو التوصيل (اختياري)</label>
+              <textarea
+                className="field-input" rows={4} value={shippingInfo} onChange={(e) => setShippingInfo(e.target.value)}
+                placeholder="مثال: توصيل داخل المدينة خلال يومين، أو منتج رقمي يُرسل فورًا عبر البريد"
+              />
+            </div>
+            <p className="uploader-hint">إذا كان منتجك رقميًا أو خدمة، يمكنك ترك هذا الحقل فاضيًا أو كتابة طريقة التسليم.</p>
+          </div>
+        )}
+
+        {step === 4 && (
+          <div className="wizard-step wizard-review">
+            <div className="review-card">
+              {image && <img src={image} alt="" className="review-image" />}
+              <div className="review-body">
+                <h4>{name || "بدون اسم"}</h4>
+                {price && <div className="product-price">{price}</div>}
+                {category && <span className="job-tag" style={{ marginTop: 6 }}>{category}</span>}
+                {desc && <p className="review-desc">{desc}</p>}
+                {shippingInfo && <p className="review-desc"><b>الشحن:</b> {shippingInfo}</p>}
+              </div>
+            </div>
+            <p className="uploader-hint" style={{ textAlign: "center" }}>راجع منتجك جيدًا قبل النشر</p>
+          </div>
+        )}
+
+        {error && <div className="field-error"><AlertCircle size={14} /> {error}</div>}
+
+        <div className="wizard-actions">
+          {step > 1 && (
+            <button className="btn-ghost" onClick={goBack} style={{ flex: 1 }}>
+              <ChevronRight size={15} /> رجوع
+            </button>
+          )}
+          {step < totalSteps ? (
+            <button className="btn-primary" onClick={goNext} style={{ flex: 1 }}>
+              التالي <ChevronLeft size={15} />
+            </button>
+          ) : (
+            <button className="btn-primary btn-gold" onClick={save} style={{ flex: 1 }}>
+              <CheckCircle2 size={15} /> نشر المنتج
+            </button>
+          )}
+        </div>
+
+        {!isNew && step === 1 && (
+          <button className="btn-ghost danger-ghost" style={{ marginTop: 10 }} onClick={() => onDelete(product.id)}>
+            <Trash2 size={15} /> حذف المنتج
+          </button>
         )}
       </div>
     </div>
@@ -2820,6 +3353,7 @@ function ProfileView({ currentUser, setCurrentUser, goTo, notify, viewUserId }) 
   const [followBusy, setFollowBusy] = useState(false);
   const [verifyBusy, setVerifyBusy] = useState(false);
   const [followListType, setFollowListType] = useState(null); // null | "followers" | "following"
+  const [profileTab, setProfileTab] = useState("posts"); // posts | products
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -2965,12 +3499,42 @@ function ProfileView({ currentUser, setCurrentUser, goTo, notify, viewUserId }) 
         )}
       </div>
 
+      <div className="profile-tabs-bar">
+        <button className={`profile-tab ${profileTab === "posts" ? "active" : ""}`} onClick={() => setProfileTab("posts")}>
+          <MessageCircle size={15} /> المنشورات
+        </button>
+        {shop?.published && (
+          <button className={`profile-tab ${profileTab === "products" ? "active" : ""}`} onClick={() => setProfileTab("products")}>
+            <ShoppingBag size={15} /> المنتجات
+          </button>
+        )}
+      </div>
+
       <div className="profile-posts-section">
-        <h3 className="section-title"><MessageCircle size={15} /> المنشورات</h3>
-        {myPosts.length === 0 && <EmptyState icon={MessageCircle} title="لا توجد منشورات" />}
-        {myPosts.map((p) => (
-          <PostCard key={p.id} post={p} author={user} currentUser={currentUser} goTo={goTo} onChanged={load} notify={notify} />
-        ))}
+        {profileTab === "posts" && (
+          <>
+            {myPosts.length === 0 && <EmptyState icon={MessageCircle} title="لا توجد منشورات" />}
+            {myPosts.map((p) => (
+              <PostCard key={p.id} post={p} author={user} currentUser={currentUser} goTo={goTo} onChanged={load} notify={notify} />
+            ))}
+          </>
+        )}
+        {profileTab === "products" && shop && (
+          <div className="products-grid" style={{ padding: 0 }}>
+            {(shop.products || []).length === 0 && <EmptyState icon={ShoppingBag} title="لا توجد منتجات بعد" />}
+            {(shop.products || []).map((p) => (
+              <div className="product-card" key={p.id} onClick={() => goTo("shopPage", targetId)}>
+                <div className="product-img" style={p.image ? { backgroundImage: `url(${p.image})` } : {}}>
+                  {!p.image && <ImageIcon size={22} />}
+                </div>
+                <div className="product-info">
+                  <span className="product-name">{p.name}</span>
+                  {p.price && <span className="product-price">{p.price}</span>}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
 
       {editOpen && (
@@ -3269,6 +3833,9 @@ function SearchModal({ currentUser, goTo, onClose }) {
 function ConversationsListView({ currentUser, goTo, notify, onRead }) {
   const [conversations, setConversations] = useState(null);
   const [usersCache, setUsersCache] = useState({});
+  const [shopOwnerIds, setShopOwnerIds] = useState(new Set());
+  const [query, setQuery] = useState("");
+  const [filter, setFilter] = useState("all"); // all | unread | shops
 
   const load = useCallback(async () => {
     const list = await getMyConversationsList(currentUser.id);
@@ -3278,19 +3845,63 @@ function ConversationsListView({ currentUser, goTo, notify, onRead }) {
     const map = {};
     ids.forEach((id, i) => { if (fetched[i]) map[id] = fetched[i]; });
     setUsersCache(map);
+
+    const shopsChecks = await Promise.all(ids.map((id) => dbGet(KEYS.shop(id), true)));
+    const shopSet = new Set();
+    ids.forEach((id, i) => { if (shopsChecks[i]?.published) shopSet.add(id); });
+    setShopOwnerIds(shopSet);
   }, [currentUser.id]);
 
   useEffect(() => { load(); }, [load]);
 
+  const filterTabs = [
+    { key: "all", label: "الكل" },
+    { key: "unread", label: "غير مقروء" },
+    { key: "shops", label: "المتاجر" },
+  ];
+
+  const filtered = useMemo(() => {
+    if (!conversations) return null;
+    let list = conversations;
+    if (filter === "unread") list = list.filter((c) => c.unread);
+    if (filter === "shops") list = list.filter((c) => shopOwnerIds.has(c.otherUserId));
+    const q = query.trim().toLowerCase();
+    if (q) {
+      list = list.filter((c) => {
+        const u = usersCache[c.otherUserId];
+        return u?.fullName?.toLowerCase().includes(q) || u?.username?.toLowerCase().includes(q);
+      });
+    }
+    return list;
+  }, [conversations, filter, query, usersCache, shopOwnerIds]);
+
   return (
     <div className="page-pad">
       <PageHeader title="الرسائل" />
-      {conversations === null && <div className="skel-block" style={{ height: 200 }} />}
-      {conversations && conversations.length === 0 && (
-        <EmptyState icon={MessageSquare} title="لا توجد محادثات بعد" hint="ابدأ محادثة من الملف الشخصي لأي مستخدم" />
+
+      <div className="conv-search-row">
+        <Search size={16} className="search-icon" />
+        <input
+          className="field-input search-input"
+          placeholder="ابحث في الرسائل..."
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+        />
+      </div>
+
+      <div className="cat-scroll" style={{ marginBottom: 10 }}>
+        {filterTabs.map((t) => (
+          <button key={t.key} className={`cat-chip ${filter === t.key ? "active" : ""}`} onClick={() => setFilter(t.key)}>{t.label}</button>
+        ))}
+      </div>
+
+      {filtered === null && <div className="skel-block" style={{ height: 200 }} />}
+      {filtered && filtered.length === 0 && (
+        <EmptyState icon={MessageSquare} title="لا توجد محادثات" hint="ابدأ محادثة من الملف الشخصي لأي مستخدم" />
       )}
-      {conversations && conversations.map((c) => {
+      {filtered && filtered.map((c) => {
         const u = usersCache[c.otherUserId];
+        const isShop = shopOwnerIds.has(c.otherUserId);
         return (
           <div key={c.otherUserId} className="conv-row" onClick={() => goTo("chat", c.otherUserId)}>
             <Avatar user={u} size={48} />
@@ -3299,6 +3910,7 @@ function ConversationsListView({ currentUser, goTo, notify, onRead }) {
                 <span className="conv-name">
                   {u?.fullName || "مستخدم"}
                   <UserBadge user={u} size={12} style={{ marginRight: 3 }} />
+                  {isShop && <Store size={12} style={{ marginRight: 3, color: "var(--gold-2)" }} />}
                 </span>
                 <span className="conv-time">{timeAgo(c.lastAt)}</span>
               </div>
