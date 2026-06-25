@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useRef } from "react";
+import React, { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import {
   Home, Store, Briefcase, User, LogOut, Plus, Image as ImageIcon,
   Video, Megaphone, Heart, MessageCircle, Share2, Search, Settings,
@@ -550,6 +550,51 @@ async function searchNexa(query) {
 
 // خاص بالمستخدم الحالي فقط (جهازه) — لتذكر تسجيل الدخول محليًا
 const LOCAL_SESSION_KEY = "nexa_local_session_v1";
+const SOUND_PREF_KEY = "nexa_sound_enabled_v1";
+
+function isSoundEnabled() {
+  try {
+    const v = localStorage.getItem(SOUND_PREF_KEY);
+    return v === null ? true : v === "true";
+  } catch {
+    return true;
+  }
+}
+function setSoundEnabled(enabled) {
+  try {
+    localStorage.setItem(SOUND_PREF_KEY, String(enabled));
+  } catch {}
+}
+
+// تشغيل صوت تنبيه قصير عند وصول رسالة جديدة، باستخدام Web Audio API
+// (لا يعتمد على أي ملف صوتي خارجي، فيعمل دائمًا بدون اتصال بالإنترنت)
+function playMessageSound() {
+  if (!isSoundEnabled()) return;
+  try {
+    const AudioCtx = window.AudioContext || window.webkitAudioContext;
+    if (!AudioCtx) return;
+    const ctx = new AudioCtx();
+    const playTone = (freq, startTime, duration) => {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = "sine";
+      osc.frequency.value = freq;
+      gain.gain.setValueAtTime(0.0001, startTime);
+      gain.gain.exponentialRampToValueAtTime(0.18, startTime + 0.015);
+      gain.gain.exponentialRampToValueAtTime(0.0001, startTime + duration);
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start(startTime);
+      osc.stop(startTime + duration);
+    };
+    const now = ctx.currentTime;
+    playTone(880, now, 0.12);
+    playTone(1320, now + 0.09, 0.15);
+    setTimeout(() => ctx.close(), 400);
+  } catch {}
+}
+
+
 
 
 export default function NexaApp() {
@@ -1112,6 +1157,30 @@ function NexaStyles() {
         justify-content: center; padding: 0 3px; border: 1.5px solid #fff;
       }
 
+      /* ---- جرس الإشعارات في الهيدر ---- */
+      .notif-bell-btn { position: relative; }
+      .header-badge { position: absolute; top: -2px; left: -4px; }
+
+      /* ---- صفحة الإشعارات ---- */
+      .notif-group { margin-bottom: 18px; }
+      .notif-group-title { font-size: 12px; font-weight: 700; color: var(--ink-soft); text-transform: uppercase; letter-spacing: 0.3px; margin-bottom: 6px; padding: 0 4px; }
+      .notif-row {
+        display: flex; align-items: center; gap: 12px; padding: 11px 8px; border-radius: 14px; cursor: pointer;
+        transition: background .15s;
+      }
+      .notif-row:hover { background: var(--paper-2); }
+      .notif-row.unread { background: #FFF8EA; }
+      .notif-avatar-stack { position: relative; flex-shrink: 0; }
+      .notif-icon {
+        position: absolute; bottom: -3px; left: -3px; width: 20px; height: 20px; border-radius: 50%;
+        display: flex; align-items: center; justify-content: center; border: 2px solid #fff;
+      }
+      .notif-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+      .notif-text { font-size: 13.5px; line-height: 1.5; color: var(--ink); }
+      .notif-text b { font-weight: 700; }
+      .notif-time { font-size: 11px; color: var(--ink-soft); }
+      .notif-dot { width: 9px; height: 9px; border-radius: 50%; background: var(--gold-2); flex-shrink: 0; }
+
       /* ---- نافذة البحث ---- */
       .search-overlay { align-items: flex-start; padding-top: 0; }
       .search-sheet {
@@ -1165,6 +1234,32 @@ function NexaStyles() {
       .chat-input-bar { display: flex; align-items: center; gap: 8px; padding: 10px 14px; border-top: 1px solid var(--line); background: #fff; }
       .chat-text-input { flex: 1; border: 1.5px solid var(--line); border-radius: 999px; padding: 10px 16px; font-size: 13.5px; outline: none; }
       .chat-text-input:focus { border-color: var(--gold-2); }
+
+      /* ---- صفحة الإعدادات ---- */
+      .settings-section { background: #fff; border-radius: 16px; margin-bottom: 16px; border: 1px solid var(--line); overflow: hidden; }
+      .settings-section-title { font-size: 12px; font-weight: 700; color: var(--ink-soft); text-transform: uppercase; letter-spacing: 0.3px; padding: 12px 16px 4px; }
+      .settings-section-title.danger-title { color: var(--red); }
+      .settings-row { display: flex; align-items: center; justify-content: space-between; padding: 13px 16px; border-top: 1px solid var(--line); gap: 12px; }
+      .settings-row-text { display: flex; flex-direction: column; gap: 3px; }
+      .settings-row-label { font-size: 13.5px; font-weight: 700; }
+      .settings-row-hint { font-size: 11.5px; color: var(--ink-soft); }
+      .settings-link-row {
+        display: flex; align-items: center; justify-content: space-between; width: 100%; background: none; border: none;
+        padding: 14px 16px; border-top: 1px solid var(--line); font-size: 13.5px; font-weight: 600; color: var(--ink);
+      }
+      .settings-link-row:hover { background: var(--paper-2); }
+      .settings-link-row.danger { color: var(--red); }
+
+      .toggle-switch {
+        width: 44px; height: 26px; border-radius: 999px; background: var(--line); border: none; position: relative;
+        flex-shrink: 0; transition: background .2s;
+      }
+      .toggle-switch.on { background: var(--teal); }
+      .toggle-knob {
+        position: absolute; top: 3px; right: 3px; width: 20px; height: 20px; border-radius: 50%; background: #fff;
+        box-shadow: 0 1px 3px rgba(0,0,0,0.25); transition: transform .2s;
+      }
+      .toggle-switch.on .toggle-knob { transform: translateX(-18px); }
 
       @media (max-width: 380px) {
         .shop-grid, .products-grid { grid-template-columns: 1fr 1fr; gap: 9px; }
@@ -1374,14 +1469,20 @@ function AuthScreen({ onLogin, notify }) {
    ============================================================ */
 function AppShell({ currentUser, setCurrentUser, view, viewParam, goTo, onLogout, notify, showHelp, setShowHelp }) {
   const [menuOpen, setMenuOpen] = useState(false);
+  const [confirmLogout, setConfirmLogout] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
   const [unreadCount, setUnreadCount] = useState(0);
   const [unreadNotifCount, setUnreadNotifCount] = useState(0);
+  const hasLoadedUnreadOnce = useRef(false);
 
   const refreshUnread = useCallback(async () => {
     const c = await getUnreadMessagesCount(currentUser.id);
-    setUnreadCount(c);
-  }, [currentUser.id]);
+    setUnreadCount((prev) => {
+      if (hasLoadedUnreadOnce.current && view !== "chat" && c > prev) playMessageSound();
+      hasLoadedUnreadOnce.current = true;
+      return c;
+    });
+  }, [currentUser.id, view]);
 
   const refreshNotifUnread = useCallback(async () => {
     const c = await getUnreadNotificationsCount(currentUser.id);
@@ -1432,18 +1533,32 @@ function AppShell({ currentUser, setCurrentUser, view, viewParam, goTo, onLogout
             <button onClick={() => { goTo("profile"); setMenuOpen(false); }}>
               <User size={16} /> حسابي
             </button>
+            <button onClick={() => { goTo("settings"); setMenuOpen(false); }}>
+              <Settings size={16} /> الإعدادات
+            </button>
             <button onClick={() => { goTo("support"); setMenuOpen(false); }}>
               <Coffee size={16} /> دعم نِكسا
             </button>
             <button onClick={() => { setShowHelp(true); setMenuOpen(false); }}>
               <HelpCircle size={16} /> كيف يعمل التطبيق؟
             </button>
-            <button onClick={onLogout} className="menu-danger">
+            <button onClick={() => { setMenuOpen(false); setConfirmLogout(true); }} className="menu-danger">
               <LogOut size={16} /> تسجيل الخروج
             </button>
           </div>
         )}
       </header>
+
+      {confirmLogout && (
+        <ConfirmModal
+          title="تسجيل الخروج؟"
+          text="ستحتاج لتسجيل الدخول مجددًا للوصول لحسابك."
+          confirmLabel="تسجيل الخروج"
+          danger
+          onConfirm={() => { setConfirmLogout(false); onLogout(); }}
+          onCancel={() => setConfirmLogout(false)}
+        />
+      )}
 
       <main className="shell-main">
         {view === "feed" && <FeedView currentUser={currentUser} goTo={goTo} notify={notify} />}
@@ -1472,6 +1587,7 @@ function AppShell({ currentUser, setCurrentUser, view, viewParam, goTo, onLogout
           />
         )}
         {view === "support" && <SupportView goTo={goTo} />}
+        {view === "settings" && <SettingsView currentUser={currentUser} setCurrentUser={setCurrentUser} goTo={goTo} notify={notify} onLogout={onLogout} />}
       </main>
 
       <nav className="bottom-nav">
@@ -3208,6 +3324,7 @@ function ChatView({ currentUser, otherUserId, goTo, notify, onRead }) {
   const [sending, setSending] = useState(false);
   const scrollRef = useRef(null);
   const pollRef = useRef(null);
+  const lastMsgIdRef = useRef(null);
 
   const load = useCallback(async (silent = false) => {
     const [u, msgs] = await Promise.all([
@@ -3215,6 +3332,20 @@ function ChatView({ currentUser, otherUserId, goTo, notify, onRead }) {
       getConversation(currentUser.id, otherUserId),
     ]);
     setOtherUser(u);
+
+    // تشغيل صوت تنبيه إذا وصلت رسالة جديدة فعليًا من الطرف الآخر أثناء الاستماع الصامت
+    if (silent && msgs.length > 0) {
+      const newest = msgs[msgs.length - 1];
+      if (
+        lastMsgIdRef.current &&
+        newest.id !== lastMsgIdRef.current &&
+        newest.senderId === otherUserId
+      ) {
+        playMessageSound();
+      }
+    }
+    if (msgs.length > 0) lastMsgIdRef.current = msgs[msgs.length - 1].id;
+
     setMessages(msgs);
     await markConversationRead(otherUserId, currentUser.id);
     if (onRead) onRead();
@@ -3449,32 +3580,250 @@ function NotificationsView({ currentUser, goTo, onRead }) {
     else goTo("profile");
   };
 
+  const groups = useMemo(() => {
+    if (!items) return [];
+    const now = Date.now();
+    const oneDay = 86400000;
+    const today = [], week = [], earlier = [];
+    for (const n of items) {
+      const diff = now - n.createdAt;
+      if (diff < oneDay) today.push(n);
+      else if (diff < oneDay * 7) week.push(n);
+      else earlier.push(n);
+    }
+    return [
+      { label: "اليوم", list: today },
+      { label: "هذا الأسبوع", list: week },
+      { label: "سابقًا", list: earlier },
+    ].filter((g) => g.list.length > 0);
+  }, [items]);
+
+  const renderRow = (n) => {
+    const meta = NOTIF_META[n.type] || NOTIF_META.follow;
+    const Icon = meta.icon;
+    const fromUser = usersCache[n.fromUserId];
+    return (
+      <div key={n.id} className={`notif-row ${!n.read ? "unread" : ""}`} onClick={() => handleClick(n)}>
+        <div className="notif-avatar-stack">
+          <Avatar user={fromUser} size={42} />
+          <div className="notif-icon" style={{ background: meta.color }}>
+            <Icon size={11} color="#fff" />
+          </div>
+        </div>
+        <div className="notif-body">
+          <span className="notif-text">
+            <b>{fromUser?.fullName || "مستخدم نِكسا"}</b> {meta.text}
+          </span>
+          <span className="notif-time">{timeAgo(n.createdAt)}</span>
+        </div>
+        {!n.read && <span className="notif-dot" />}
+      </div>
+    );
+  };
+
   return (
     <div className="page-pad">
       <PageHeader title="الإشعارات" onBack={() => goTo("feed")} />
-      {items === null && <div className="skel-block" style={{ height: 200 }} />}
+      {items === null && (
+        <div>
+          {[1, 2, 3].map((i) => (
+            <div className="skel-row" key={i} style={{ marginBottom: 14 }}>
+              <div className="skel-circle" />
+              <div className="skel-lines"><div className="skel-line w60" /><div className="skel-line w30" /></div>
+            </div>
+          ))}
+        </div>
+      )}
       {items && items.length === 0 && (
         <EmptyState icon={Bell} title="لا توجد إشعارات بعد" hint="ستظهر هنا أي متابعة جديدة، رسالة، أو تفاعل مع منشوراتك" />
       )}
-      {items && items.map((n) => {
-        const meta = NOTIF_META[n.type] || NOTIF_META.follow;
-        const Icon = meta.icon;
-        const fromUser = usersCache[n.fromUserId];
-        return (
-          <div key={n.id} className={`notif-row ${!n.read ? "unread" : ""}`} onClick={() => handleClick(n)}>
-            <div className="notif-icon" style={{ background: meta.color }}>
-              <Icon size={15} color="#fff" />
-            </div>
-            <Avatar user={fromUser} size={36} />
-            <div className="notif-body">
-              <span className="notif-text">
-                <b>{fromUser?.fullName || "مستخدم نِكسا"}</b> {meta.text}
-              </span>
-              <span className="notif-time">{timeAgo(n.createdAt)}</span>
-            </div>
+      {groups.map((g) => (
+        <div className="notif-group" key={g.label}>
+          <h4 className="notif-group-title">{g.label}</h4>
+          {g.list.map(renderRow)}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/* ============================================================
+   صفحة الإعدادات
+   ============================================================ */
+function SettingsView({ currentUser, setCurrentUser, goTo, notify, onLogout }) {
+  const [soundOn, setSoundOn] = useState(isSoundEnabled());
+  const [pwOpen, setPwOpen] = useState(false);
+  const [deleteOpen, setDeleteOpen] = useState(false);
+
+  const toggleSound = () => {
+    const next = !soundOn;
+    setSoundOn(next);
+    setSoundEnabled(next);
+    if (next) playMessageSound();
+  };
+
+  return (
+    <div className="page-pad">
+      <PageHeader title="الإعدادات" onBack={() => goTo("profile")} />
+
+      <div className="settings-section">
+        <h4 className="settings-section-title">التنبيهات</h4>
+        <div className="settings-row">
+          <div className="settings-row-text">
+            <span className="settings-row-label">صوت الرسائل</span>
+            <span className="settings-row-hint">تشغيل صوت تنبيه عند استقبال رسالة جديدة</span>
           </div>
-        );
-      })}
+          <button className={`toggle-switch ${soundOn ? "on" : ""}`} onClick={toggleSound}>
+            <span className="toggle-knob" />
+          </button>
+        </div>
+      </div>
+
+      <div className="settings-section">
+        <h4 className="settings-section-title">الحساب</h4>
+        <button className="settings-link-row" onClick={() => setPwOpen(true)}>
+          <span>تغيير كلمة المرور</span>
+          <ChevronLeft size={17} />
+        </button>
+        <button className="settings-link-row" onClick={() => goTo("profile")}>
+          <span>تعديل الملف الشخصي</span>
+          <ChevronLeft size={17} />
+        </button>
+      </div>
+
+      <div className="settings-section">
+        <h4 className="settings-section-title">عن نِكسا</h4>
+        <button className="settings-link-row" onClick={() => goTo("support")}>
+          <span>دعم نِكسا</span>
+          <ChevronLeft size={17} />
+        </button>
+      </div>
+
+      <div className="settings-section">
+        <h4 className="settings-section-title danger-title">منطقة الخطر</h4>
+        <button className="settings-link-row danger" onClick={() => setDeleteOpen(true)}>
+          <span>حذف الحساب نهائيًا</span>
+          <Trash2 size={16} />
+        </button>
+      </div>
+
+      {pwOpen && (
+        <ChangePasswordModal
+          currentUser={currentUser}
+          onClose={() => setPwOpen(false)}
+          notify={notify}
+        />
+      )}
+
+      {deleteOpen && (
+        <DeleteAccountModal
+          currentUser={currentUser}
+          onClose={() => setDeleteOpen(false)}
+          onDeleted={onLogout}
+          notify={notify}
+        />
+      )}
+    </div>
+  );
+}
+
+function ChangePasswordModal({ currentUser, onClose, notify }) {
+  const [current, setCurrent] = useState("");
+  const [next, setNext] = useState("");
+  const [confirm, setConfirm] = useState("");
+  const [error, setError] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  const save = async () => {
+    setError("");
+    if (!current || !next || !confirm) { setError("عبّئ كل الحقول"); return; }
+    if (next.length < 4) { setError("كلمة المرور الجديدة قصيرة جدًا"); return; }
+    if (next !== confirm) { setError("كلمتا المرور الجديدتان غير متطابقتين"); return; }
+    setSaving(true);
+    const currentHash = await sha256(current + "::nexa::" + currentUser.username);
+    if (currentHash !== currentUser.passHash) {
+      setError("كلمة المرور الحالية غير صحيحة");
+      setSaving(false);
+      return;
+    }
+    const newHash = await sha256(next + "::nexa::" + currentUser.username);
+    const result = await dbSet(KEYS.users(currentUser.id), { ...currentUser, passHash: newHash }, true);
+    setSaving(false);
+    if (result) {
+      notify("تم تغيير كلمة المرور بنجاح");
+      onClose();
+    } else {
+      setError("تعذّر حفظ كلمة المرور الجديدة، حاول مجددًا");
+    }
+  };
+
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal-sheet" onClick={(e) => e.stopPropagation()}>
+        <div className="modal-handle" />
+        <div className="modal-head">
+          <h3>تغيير كلمة المرور</h3>
+          <button className="icon-btn" onClick={onClose}><X size={20} /></button>
+        </div>
+        <div className="field-group">
+          <label className="field-label">كلمة المرور الحالية</label>
+          <input className="field-input" type="password" value={current} onChange={(e) => setCurrent(e.target.value)} />
+        </div>
+        <div className="field-group">
+          <label className="field-label">كلمة المرور الجديدة</label>
+          <input className="field-input" type="password" value={next} onChange={(e) => setNext(e.target.value)} />
+        </div>
+        <div className="field-group">
+          <label className="field-label">تأكيد كلمة المرور الجديدة</label>
+          <input className="field-input" type="password" value={confirm} onChange={(e) => setConfirm(e.target.value)} />
+        </div>
+        {error && <div className="field-error"><AlertCircle size={14} /> {error}</div>}
+        <button className="btn-primary" onClick={save} disabled={saving} style={{ marginTop: 8 }}>
+          {saving ? <Loader2 size={18} className="nx-spin" /> : "حفظ كلمة المرور"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function DeleteAccountModal({ currentUser, onClose, onDeleted, notify }) {
+  const [confirmText, setConfirmText] = useState("");
+  const [deleting, setDeleting] = useState(false);
+
+  const matches = confirmText.trim() === currentUser.username;
+
+  const doDelete = async () => {
+    if (!matches) return;
+    setDeleting(true);
+    const result = await dbDelete(KEYS.users(currentUser.id), true);
+    setDeleting(false);
+    if (result) {
+      notify("تم حذف حسابك نهائيًا");
+      onDeleted();
+    } else {
+      notify("تعذّر حذف الحساب، حاول مجددًا", "error");
+    }
+  };
+
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal-sheet" onClick={(e) => e.stopPropagation()}>
+        <div className="modal-handle" />
+        <div className="modal-head">
+          <h3>حذف الحساب نهائيًا</h3>
+          <button className="icon-btn" onClick={onClose}><X size={20} /></button>
+        </div>
+        <p style={{ fontSize: 13.5, color: "var(--red)", lineHeight: 1.7, marginBottom: 14, fontWeight: 600 }}>
+          تحذير: سيتم حذف حسابك ومتجرك ومنشوراتك ومحادثاتك نهائيًا، ولا يمكن التراجع عن هذا الإجراء.
+        </p>
+        <div className="field-group">
+          <label className="field-label">اكتب اسم المستخدم "{currentUser.username}" للتأكيد</label>
+          <input className="field-input" value={confirmText} onChange={(e) => setConfirmText(e.target.value)} placeholder={currentUser.username} />
+        </div>
+        <button className="btn-primary" style={{ background: "var(--red)", marginTop: 8 }} onClick={doDelete} disabled={!matches || deleting}>
+          {deleting ? <Loader2 size={18} className="nx-spin" /> : <><Trash2 size={15} /> حذف حسابي نهائيًا</>}
+        </button>
+      </div>
     </div>
   );
 }
