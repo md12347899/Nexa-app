@@ -6,7 +6,8 @@ import {
   ChevronRight, Coffee, HelpCircle, Eye, EyeOff, ShoppingBag, Sparkles,
   Clock, DollarSign, Tag, Filter, Bell, Camera, Link2, ArrowRight,
   Loader2, AlertCircle, Info, UserPlus, UserCheck, ShieldCheck, MoreVertical,
-  Upload, Globe, Aperture as InstagramIcon, Play as YoutubeIcon, AtSign as TwitterIcon, Users as FacebookIcon, MessageSquare, Music2
+  Upload, Globe, Aperture as InstagramIcon, Play as YoutubeIcon, AtSign as TwitterIcon, Users as FacebookIcon, MessageSquare, Music2,
+  Play, Pause, Users
 } from "lucide-react";
 import { supabase } from "./supabaseClient.js";
 
@@ -129,14 +130,14 @@ function rowToPost(r) {
   return {
     id: r.id, authorId: r.author_id, type: r.type, text: r.text || "", mediaUrl: r.media_url || "",
     productName: r.product_name || "", price: r.price || "", likes: r.likes || [], comments: r.comments || [],
-    createdAt: r.created_at,
+    pinned: r.pinned || false, createdAt: r.created_at,
   };
 }
 function postToRow(p) {
   return {
     id: p.id, author_id: p.authorId, type: p.type, text: p.text || "", media_url: p.mediaUrl || "",
     product_name: p.productName || "", price: p.price || "", likes: p.likes || [], comments: p.comments || [],
-    created_at: p.createdAt,
+    pinned: p.pinned || false, created_at: p.createdAt,
   };
 }
 function rowToJob(r) {
@@ -496,6 +497,59 @@ async function deleteStory(storyId, authorId, requesterId) {
   }
 }
 
+// ---------- تحليلات المتجر (للموثقين) ----------
+async function recordShopVisit(shopOwnerId, visitorId) {
+  if (shopOwnerId === visitorId) return; // لا نسجّل زيارة المالك لمتجره
+  try {
+    await supabase.from("shop_visits").insert({
+      shop_owner_id: shopOwnerId, visitor_id: visitorId, created_at: Date.now(),
+    });
+  } catch (e) {
+    console.error("recordShopVisit failed", e);
+  }
+}
+
+async function getShopAnalytics(shopOwnerId) {
+  try {
+    const sevenDaysAgo = Date.now() - 7 * 86400000;
+    const { data, error } = await supabase
+      .from("shop_visits")
+      .select("created_at, visitor_id")
+      .eq("shop_owner_id", shopOwnerId)
+      .gt("created_at", sevenDaysAgo);
+    if (error) throw error;
+
+    const totalVisits = data.length;
+    const uniqueVisitors = new Set(data.map((r) => r.visitor_id)).size;
+
+    // تجميع الزيارات حسب اليوم لآخر 7 أيام
+    const dayBuckets = Array.from({ length: 7 }, (_, i) => {
+      const dayStart = new Date();
+      dayStart.setHours(0, 0, 0, 0);
+      dayStart.setDate(dayStart.getDate() - (6 - i));
+      return { date: dayStart, count: 0 };
+    });
+    for (const row of data) {
+      const d = new Date(row.created_at);
+      d.setHours(0, 0, 0, 0);
+      const bucket = dayBuckets.find((b) => b.date.getTime() === d.getTime());
+      if (bucket) bucket.count++;
+    }
+
+    return {
+      totalVisits,
+      uniqueVisitors,
+      dailyData: dayBuckets.map((b) => ({
+        label: b.date.toLocaleDateString("ar", { weekday: "short" }),
+        count: b.count,
+      })),
+    };
+  } catch (e) {
+    console.error("getShopAnalytics failed", e);
+    return { totalVisits: 0, uniqueVisitors: 0, dailyData: [] };
+  }
+}
+
 // ---------- الرسائل الخاصة ----------
 function conversationId(userIdA, userIdB) {
   return [userIdA, userIdB].sort().join("__");
@@ -699,6 +753,24 @@ export default function NexaApp() {
       setBooting(false);
     })();
   }, []);
+
+  // فتح متجر مباشرة عبر رابط مختصر (مثل ?s=username)، إذا كان موجودًا في الرابط
+  useEffect(() => {
+    if (booting || !currentUser) return;
+    try {
+      const params = new URLSearchParams(window.location.search);
+      const shopUsername = params.get("s");
+      if (shopUsername) {
+        (async () => {
+          const ownerId = await dbGet(`uname:${shopUsername}`, true);
+          if (ownerId) {
+            setView("shopPage");
+            setViewParam(ownerId);
+          }
+        })();
+      }
+    } catch {}
+  }, [booting, currentUser]);
 
   const handleLogin = (userObj) => {
     setCurrentUser(userObj);
@@ -979,6 +1051,11 @@ function NexaStyles() {
       .composer-quick-actions button:hover { border-color: var(--gold-2); color: var(--gold-2); }
 
       .post-card { background: #fff; border-radius: 18px; padding: 15px; margin-bottom: 14px; box-shadow: var(--shadow); border: 1px solid var(--line); }
+      .post-card.pinned { border-color: var(--gold-2); border-width: 1.5px; }
+      .pinned-banner {
+        display: flex; align-items: center; gap: 5px; color: var(--gold-2); font-size: 11.5px; font-weight: 700;
+        margin-bottom: 10px;
+      }
       .post-card.skel { padding: 16px; }
       .post-head { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
       .post-head-clickable { display: flex; align-items: center; gap: 10px; cursor: pointer; flex: 1; min-width: 0; }
@@ -1083,7 +1160,25 @@ function NexaStyles() {
       /* ---- صفحة المتجر المميزة ---- */
       .shop-page { max-width: 640px; margin: 0 auto; padding-bottom: 30px; }
       .shop-hero { position: relative; min-height: 230px; background: linear-gradient(135deg, var(--teal-2), var(--teal)); display: flex; align-items: flex-end; padding: 20px 18px; background-size: cover; background-position: center; }
-      .edit-shop-btn { position: absolute; top: 14px; left: 14px; background: rgba(255,255,255,0.92); border: none; border-radius: 10px; padding: 8px 13px; font-size: 12.5px; font-weight: 700; display: flex; align-items: center; gap: 6px; color: var(--teal); }
+      .shop-owner-actions { position: absolute; top: 14px; left: 14px; right: 56px; display: flex; flex-wrap: wrap; gap: 7px; justify-content: flex-end; }
+      .shop-owner-actions .edit-shop-btn, .shop-owner-actions .analytics-btn { padding: 7px 10px; font-size: 11.5px; }
+      .edit-shop-btn { background: rgba(255,255,255,0.92); border: none; border-radius: 10px; padding: 8px 13px; font-size: 12.5px; font-weight: 700; display: flex; align-items: center; gap: 6px; color: var(--teal); }
+      .profile-cover .edit-shop-btn, .shop-hero > .edit-shop-btn { position: absolute; top: 14px; left: 14px; }
+      .analytics-btn { background: rgba(255,255,255,0.92); border: none; border-radius: 10px; padding: 8px 13px; font-size: 12.5px; font-weight: 700; display: flex; align-items: center; gap: 6px; color: var(--gold-2); }
+
+      /* ---- تحليلات المتجر ---- */
+      .analytics-stats-row { display: flex; gap: 10px; margin-bottom: 18px; }
+      .analytics-stat-card { flex: 1; background: var(--paper-2); border-radius: 14px; padding: 14px; display: flex; flex-direction: column; align-items: center; gap: 4px; }
+      .analytics-stat-card b { font-size: 20px; font-weight: 800; color: var(--ink); }
+      .analytics-stat-card span { font-size: 11px; color: var(--ink-soft); }
+      .analytics-section-title { font-size: 13px; font-weight: 700; margin: 14px 0 10px; color: var(--ink); }
+      .analytics-chart { display: flex; justify-content: space-between; gap: 6px; height: 100px; margin-bottom: 10px; }
+      .analytics-bar-col { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: flex-end; gap: 6px; height: 100%; }
+      .analytics-bar-track { width: 100%; height: 100%; display: flex; align-items: flex-end; }
+      .analytics-bar-fill { width: 100%; background: linear-gradient(180deg, var(--gold), var(--gold-2)); border-radius: 5px 5px 0 0; min-height: 3px; transition: height 0.3s; }
+      .analytics-bar-label { font-size: 10px; color: var(--ink-soft); }
+      .analytics-product-row { display: flex; align-items: center; gap: 10px; padding: 8px 0; border-bottom: 1px solid var(--line); }
+      .analytics-views-badge { font-size: 11px; font-weight: 700; color: var(--ink-soft); display: flex; align-items: center; gap: 3px; flex-shrink: 0; }
       .shop-hero-content { display: flex; align-items: flex-end; gap: 13px; width: 100%; }
       .shop-logo-wrap { border-radius: 14px; border: 3px solid #fff; box-shadow: var(--shadow); overflow: hidden; flex-shrink: 0; }
       .shop-hero-text { color: #fff; padding-bottom: 4px; }
@@ -1298,7 +1393,10 @@ function NexaStyles() {
       .conv-dot { width: 9px; height: 9px; border-radius: 50%; background: var(--gold-2); flex-shrink: 0; }
 
       /* ---- صفحة الدردشة ---- */
-      .chat-page { display: flex; flex-direction: column; height: calc(100vh - 0px); max-width: 640px; margin: 0 auto; }
+      .chat-page {
+        position: fixed; inset: 0; z-index: 60; display: flex; flex-direction: column;
+        max-width: 640px; margin: 0 auto; background: var(--paper);
+      }
       .chat-header { display: flex; align-items: center; gap: 10px; padding: 12px 16px; border-bottom: 1px solid var(--line); background: #fff; position: sticky; top: 0; z-index: 5; }
       .chat-header-user { display: flex; align-items: center; gap: 10px; cursor: pointer; flex: 1; }
       .chat-header-name { font-size: 14px; font-weight: 700; display: inline-flex; align-items: center; }
@@ -1335,6 +1433,15 @@ function NexaStyles() {
       .settings-link-row:hover { background: var(--paper-2); }
       .settings-link-row.danger { color: var(--red); }
 
+      .donate-card-box { display: flex; align-items: center; gap: 10px; padding: 13px 16px; border-top: 1px solid var(--line); }
+      .donate-card-text { display: flex; flex-direction: column; gap: 3px; flex: 1; min-width: 0; }
+      .donate-card-label { font-size: 12px; color: var(--ink-soft); }
+      .donate-card-number { font-size: 14px; font-weight: 700; letter-spacing: 0.5px; color: var(--teal); }
+      .donate-copy-btn {
+        background: var(--paper-2); border: none; border-radius: 9px; padding: 7px 12px; font-size: 11.5px;
+        font-weight: 700; color: var(--teal-2); display: flex; align-items: center; gap: 4px; flex-shrink: 0;
+      }
+
       .toggle-switch {
         width: 44px; height: 26px; border-radius: 999px; background: var(--line); border: none; position: relative;
         flex-shrink: 0; transition: background .2s;
@@ -1366,9 +1473,10 @@ function NexaStyles() {
       .story-viewer { position: relative; width: 100%; max-width: 480px; height: 100%; background: #111; overflow: hidden; }
       .story-progress-row { position: absolute; top: 10px; left: 10px; right: 10px; display: flex; gap: 4px; z-index: 5; }
       .story-progress-track { flex: 1; height: 3px; background: rgba(255,255,255,0.3); border-radius: 3px; overflow: hidden; }
-      .story-progress-fill { height: 100%; width: 0%; background: #fff; }
+      .story-progress-fill { height: 100%; width: 0%; background: #fff; animation-play-state: running; }
       .story-progress-fill.done { width: 100%; }
-      .story-progress-fill.active { width: 100%; animation: storyFill 5s linear forwards; }
+      .story-progress-fill.active { width: 100%; animation-name: storyFill; animation-timing-function: linear; animation-fill-mode: forwards; }
+      .story-progress-fill.active.paused { animation-play-state: paused; }
       @keyframes storyFill { from { width: 0%; } to { width: 100%; } }
       .story-viewer-head { position: absolute; top: 22px; left: 12px; right: 12px; display: flex; align-items: center; gap: 9px; z-index: 5; }
       .story-viewer-name { color: #fff; font-size: 13px; font-weight: 700; }
@@ -2059,22 +2167,62 @@ function StoryComposer({ currentUser, onClose, onCreated }) {
 function StoryViewer({ authorId, stories, author, currentUser, onClose, notify }) {
   const [index, setIndex] = useState(0);
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [paused, setPaused] = useState(false);
+  const [progressKey, setProgressKey] = useState(0); // لإعادة تشغيل أنيميشن الشريط عند كل قصة
   const timerRef = useRef(null);
+  const videoRef = useRef(null);
+  const remainingRef = useRef(0);
+  const startedAtRef = useRef(0);
   const isOwner = authorId === currentUser.id;
   const current = stories[index];
+
+  const STORY_MAX_DURATION_MS = 60000; // حد أقصى دقيقة كاملة لأي قصة (صورة أو فيديو)
+  const STORY_IMAGE_DURATION_MS = 6000; // مدة عرض الصورة الثابتة
+
+  const goNext = useCallback(() => {
+    if (index < stories.length - 1) setIndex((i) => i + 1);
+    else onClose();
+  }, [index, stories.length, onClose]);
 
   useEffect(() => {
     if (!current) { onClose(); return; }
     markStoryViewed(current.id, currentUser.id);
+    setProgressKey((k) => k + 1);
+    setPaused(false);
     clearTimeout(timerRef.current);
-    timerRef.current = setTimeout(() => {
-      if (index < stories.length - 1) setIndex((i) => i + 1);
-      else onClose();
-    }, current.mediaType === "video" ? 8000 : 5000);
+
+    const duration = current.mediaType === "video" ? STORY_MAX_DURATION_MS : STORY_IMAGE_DURATION_MS;
+    remainingRef.current = duration;
+    startedAtRef.current = Date.now();
+    timerRef.current = setTimeout(goNext, duration);
     return () => clearTimeout(timerRef.current);
-  }, [index, current]);
+  }, [index, current, goNext]);
 
   if (!current) return null;
+
+  const handleVideoEnded = () => {
+    clearTimeout(timerRef.current);
+    goNext();
+  };
+
+  const togglePause = () => {
+    setPaused((p) => {
+      const next = !p;
+      if (next) {
+        // إيقاف مؤقت: نحسب الوقت المتبقي ونوقف المؤقت
+        clearTimeout(timerRef.current);
+        const elapsed = Date.now() - startedAtRef.current;
+        remainingRef.current = Math.max(0, remainingRef.current - elapsed);
+        if (current.mediaType === "video" && videoRef.current) videoRef.current.pause();
+      } else {
+        // استئناف: نعيد تشغيل المؤقت بالوقت المتبقي فقط
+        startedAtRef.current = Date.now();
+        timerRef.current = setTimeout(goNext, remainingRef.current);
+        if (current.mediaType === "video" && videoRef.current) videoRef.current.play();
+      }
+      return next;
+    });
+  };
 
   const handleDelete = async () => {
     await deleteStory(current.id, current.authorId, currentUser.id);
@@ -2090,7 +2238,11 @@ function StoryViewer({ authorId, stories, author, currentUser, onClose, notify }
         <div className="story-progress-row">
           {stories.map((s, i) => (
             <div key={s.id} className="story-progress-track">
-              <div className={`story-progress-fill ${i < index ? "done" : i === index ? "active" : ""}`} />
+              <div
+                key={i === index ? progressKey : undefined}
+                className={`story-progress-fill ${i < index ? "done" : i === index ? "active" : ""} ${i === index && paused ? "paused" : ""}`}
+                style={i === index ? { animationDuration: `${current.mediaType === "video" ? STORY_MAX_DURATION_MS : STORY_IMAGE_DURATION_MS}ms` } : {}}
+              />
             </div>
           ))}
         </div>
@@ -2099,6 +2251,9 @@ function StoryViewer({ authorId, stories, author, currentUser, onClose, notify }
           <span className="story-viewer-name">{author?.fullName || "مستخدم"}</span>
           <span className="story-viewer-time">{timeAgo(current.createdAt)}</span>
           <div style={{ flex: 1 }} />
+          <button className="icon-btn" style={{ color: "#fff" }} onClick={togglePause}>
+            {paused ? <Play size={18} /> : <Pause size={18} />}
+          </button>
           {isOwner && (
             <button className="icon-btn" style={{ color: "#fff" }} onClick={() => setConfirmDelete(true)}><Trash2 size={18} /></button>
           )}
@@ -2111,7 +2266,14 @@ function StoryViewer({ authorId, stories, author, currentUser, onClose, notify }
         </div>
 
         {current.mediaType === "video" ? (
-          <video src={current.mediaUrl} className="story-media" autoPlay playsInline />
+          <video
+            ref={videoRef}
+            src={current.mediaUrl}
+            className="story-media"
+            autoPlay
+            playsInline
+            onEnded={handleVideoEnded}
+          />
         ) : (
           <img src={current.mediaUrl} className="story-media" alt="" />
         )}
@@ -2439,8 +2601,25 @@ function PostCard({ post, author, currentUser, goTo, onChanged, notify }) {
     setConfirmDelete(false);
   };
 
+  const canPin = isOwnPost && (currentUser.isVerified || currentUser.username === ADMIN_USERNAME);
+
+  const togglePin = async () => {
+    setMenuOpen(false);
+    const updated = { ...post, pinned: !post.pinned };
+    const result = await dbSet(KEYS.post(post.id), updated, true);
+    if (result) {
+      notify(updated.pinned ? "تم تثبيت المنشور" : "تم إلغاء التثبيت");
+      onChanged();
+    } else {
+      notify("تعذّر تنفيذ الإجراء", "error");
+    }
+  };
+
   return (
-    <div className="post-card">
+    <div className={`post-card ${post.pinned ? "pinned" : ""}`}>
+      {post.pinned && (
+        <div className="pinned-banner"><Star size={12} fill="currentColor" /> منشور مثبّت</div>
+      )}
       <div className="post-head">
         <div className="post-head-clickable" onClick={() => goTo("userProfile", author?.id)}>
           <Avatar user={author} size={42} />
@@ -2458,6 +2637,11 @@ function PostCard({ post, author, currentUser, goTo, onChanged, notify }) {
             <button className="icon-btn" onClick={() => setMenuOpen((m) => !m)}><MoreVertical size={17} /></button>
             {menuOpen && (
               <div className="post-menu">
+                {canPin && (
+                  <button onClick={togglePin}>
+                    <Star size={14} /> {post.pinned ? "إلغاء التثبيت" : "تثبيت المنشور"}
+                  </button>
+                )}
                 <button className="menu-danger" onClick={() => { setMenuOpen(false); setConfirmDelete(true); }}>
                   <Trash2 size={14} /> حذف المنشور
                 </button>
@@ -2658,6 +2842,7 @@ function ShopPage({ shopOwnerId, currentUser, goTo, notify }) {
   const [productModal, setProductModal] = useState(null); // null | {} | product
   const [shopTab, setShopTab] = useState("products"); // posts | about | products
   const [shopPosts, setShopPosts] = useState(null);
+  const [analyticsOpen, setAnalyticsOpen] = useState(false);
   const isOwner = currentUser.id === shopOwnerId;
 
   const load = useCallback(async () => {
@@ -2671,10 +2856,28 @@ function ShopPage({ shopOwnerId, currentUser, goTo, notify }) {
   const loadShopPosts = useCallback(async () => {
     const ids = (await dbGet(KEYS.posts, true)) || [];
     const all = await Promise.all(ids.map((id) => dbGet(KEYS.post(id), true)));
-    setShopPosts(all.filter((p) => p && p.authorId === shopOwnerId).sort((a, b) => b.createdAt - a.createdAt));
+    const ownPosts = all.filter((p) => p && p.authorId === shopOwnerId);
+    ownPosts.sort((a, b) => (b.pinned - a.pinned) || (b.createdAt - a.createdAt));
+    setShopPosts(ownPosts);
   }, [shopOwnerId]);
 
   useEffect(() => { load(); loadShopPosts(); }, [load, loadShopPosts]);
+  useEffect(() => { recordShopVisit(shopOwnerId, currentUser.id); }, [shopOwnerId, currentUser.id]);
+
+  const handleProductClick = async (p) => {
+    if (isOwner) {
+      setProductModal(p);
+      return;
+    }
+    // تسجيل مشاهدة للمنتج (لإحصائيات "الأكثر مشاهدة")
+    const updatedProducts = (shop.products || []).map((prod) =>
+      prod.id === p.id ? { ...prod, views: (prod.views || 0) + 1 } : prod
+    );
+    const updatedShop = { ...shop, products: updatedProducts };
+    setShop(updatedShop); // تحديث فوري في الواجهة
+    dbSet(KEYS.shop(shopOwnerId), updatedShop, true); // حفظ في الخلفية بدون انتظار
+    setProductModal({ ...p, viewOnly: true });
+  };
 
   if (loading) {
     return <div className="page-pad"><PageHeader title="المتجر" onBack={() => goTo("shops")} /><div className="skel-block" style={{ height: 200 }} /></div>;
@@ -2708,7 +2911,28 @@ function ShopPage({ shopOwnerId, currentUser, goTo, notify }) {
       <div className="shop-hero" style={shop.coverImage ? { backgroundImage: `linear-gradient(180deg, rgba(16,59,54,0.15), rgba(16,59,54,0.75)), url(${shop.coverImage})` } : {}}>
         <button className="back-btn floating" onClick={() => goTo("shops")}><ChevronRight size={20} /></button>
         {isOwner && (
-          <button className="edit-shop-btn" onClick={() => setEditOpen(true)}><Edit3 size={15} /> تعديل المتجر</button>
+          <div className="shop-owner-actions">
+            {(owner?.isVerified || owner?.username === ADMIN_USERNAME) && (
+              <>
+                <button className="analytics-btn" onClick={() => setAnalyticsOpen(true)}><Eye size={15} /> تحليلات</button>
+                <button
+                  className="analytics-btn"
+                  onClick={async () => {
+                    try {
+                      const shortUrl = `${window.location.origin}${window.location.pathname}?s=${owner.username}`;
+                      await navigator.clipboard.writeText(shortUrl);
+                      notify("تم نسخ رابط متجرك المختصر");
+                    } catch {
+                      notify("تعذّر نسخ الرابط", "error");
+                    }
+                  }}
+                >
+                  <Link2 size={15} /> رابط المتجر
+                </button>
+              </>
+            )}
+            <button className="edit-shop-btn" onClick={() => setEditOpen(true)}><Edit3 size={15} /> تعديل المتجر</button>
+          </div>
         )}
         <div className="shop-hero-content">
           <div className="shop-logo-wrap">
@@ -2785,7 +3009,7 @@ function ShopPage({ shopOwnerId, currentUser, goTo, notify }) {
           ) : (
             <div className="products-grid">
               {shop.products.map((p) => (
-                <div className="product-card" key={p.id} onClick={() => isOwner ? setProductModal(p) : setProductModal({ ...p, viewOnly: true })}>
+                <div className="product-card" key={p.id} onClick={() => handleProductClick(p)}>
                   <div className="product-img" style={p.image ? { backgroundImage: `url(${p.image})` } : {}}>
                     {!p.image && <ImageIcon size={22} />}
                   </div>
@@ -2825,6 +3049,9 @@ function ShopPage({ shopOwnerId, currentUser, goTo, notify }) {
             notify("تم حذف المنتج");
           }}
         />
+      )}
+      {analyticsOpen && (
+        <ShopAnalyticsModal shopOwnerId={shopOwnerId} shop={shop} onClose={() => setAnalyticsOpen(false)} />
       )}
     </div>
   );
@@ -3363,7 +3590,9 @@ function ProfileView({ currentUser, setCurrentUser, goTo, notify, viewUserId }) 
     setShop(s);
     const ids = (await dbGet(KEYS.posts, true)) || [];
     const all = await Promise.all(ids.map((id) => dbGet(KEYS.post(id), true)));
-    setMyPosts(all.filter((p) => p && p.authorId === targetId).sort((a, b) => b.createdAt - a.createdAt));
+    const ownPosts = all.filter((p) => p && p.authorId === targetId);
+    ownPosts.sort((a, b) => (b.pinned - a.pinned) || (b.createdAt - a.createdAt));
+    setMyPosts(ownPosts);
     const c = await getFollowCounts(targetId);
     setCounts(c);
     if (!isSelf) {
@@ -4265,6 +4494,7 @@ function NotificationsView({ currentUser, goTo, onRead }) {
 function SettingsView({ currentUser, setCurrentUser, goTo, notify, onLogout }) {
   const [soundOn, setSoundOn] = useState(isSoundEnabled());
   const [pwOpen, setPwOpen] = useState(false);
+  const [usernameOpen, setUsernameOpen] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
 
   const toggleSound = () => {
@@ -4293,6 +4523,10 @@ function SettingsView({ currentUser, setCurrentUser, goTo, notify, onLogout }) {
 
       <div className="settings-section">
         <h4 className="settings-section-title">الحساب</h4>
+        <button className="settings-link-row" onClick={() => setUsernameOpen(true)}>
+          <span>تغيير اسم المستخدم (@{currentUser.username})</span>
+          <ChevronLeft size={17} />
+        </button>
         <button className="settings-link-row" onClick={() => setPwOpen(true)}>
           <span>تغيير كلمة المرور</span>
           <ChevronLeft size={17} />
@@ -4301,6 +4535,30 @@ function SettingsView({ currentUser, setCurrentUser, goTo, notify, onLogout }) {
           <span>تعديل الملف الشخصي</span>
           <ChevronLeft size={17} />
         </button>
+      </div>
+
+      <div className="settings-section">
+        <h4 className="settings-section-title">دعم نِكسا</h4>
+        <div className="donate-card-box">
+          <Coffee size={20} style={{ color: "var(--gold-2)" }} />
+          <div className="donate-card-text">
+            <span className="donate-card-label">للتبرع لدعم استمرار نِكسا، عبر ماستركارد:</span>
+            <span className="donate-card-number" dir="ltr">9101 2968 0245</span>
+          </div>
+          <button
+            className="donate-copy-btn"
+            onClick={async () => {
+              try {
+                await navigator.clipboard.writeText("910129680245");
+                notify("تم نسخ رقم البطاقة");
+              } catch {
+                notify("تعذّر النسخ", "error");
+              }
+            }}
+          >
+            <Link2 size={14} /> نسخ
+          </button>
+        </div>
       </div>
 
       <div className="settings-section">
@@ -4319,6 +4577,15 @@ function SettingsView({ currentUser, setCurrentUser, goTo, notify, onLogout }) {
         </button>
       </div>
 
+      {usernameOpen && (
+        <ChangeUsernameModal
+          currentUser={currentUser}
+          onClose={() => setUsernameOpen(false)}
+          onChanged={(updated) => { setUsernameOpen(false); setCurrentUser(updated); notify("تم تغيير اسم المستخدم بنجاح"); }}
+          notify={notify}
+        />
+      )}
+
       {pwOpen && (
         <ChangePasswordModal
           currentUser={currentUser}
@@ -4335,6 +4602,65 @@ function SettingsView({ currentUser, setCurrentUser, goTo, notify, onLogout }) {
           notify={notify}
         />
       )}
+    </div>
+  );
+}
+
+function ChangeUsernameModal({ currentUser, onClose, onChanged, notify }) {
+  const [newUsername, setNewUsername] = useState("");
+  const [error, setError] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  const normalize = (s) => s.trim().toLowerCase().replace(/\s+/g, "").replace(/[^a-z0-9_\u0600-\u06FF]/g, "");
+
+  const save = async () => {
+    setError("");
+    const clean = normalize(newUsername);
+    if (!clean || clean.length < 3) { setError("اسم المستخدم يجب أن يكون 3 أحرف على الأقل"); return; }
+    if (clean === currentUser.username) { setError("هذا هو اسم المستخدم الحالي بالفعل"); return; }
+    setSaving(true);
+    const existing = await dbGet(`uname:${clean}`, true);
+    if (existing) {
+      setError("اسم المستخدم هذا محجوز، جرّب اسمًا آخر");
+      setSaving(false);
+      return;
+    }
+    const updated = { ...currentUser, username: clean };
+    const result = await dbSet(KEYS.users(currentUser.id), updated, true);
+    setSaving(false);
+    if (result) {
+      onChanged(updated);
+    } else {
+      setError("تعذّر حفظ الاسم الجديد، حاول مجددًا");
+    }
+  };
+
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal-sheet" onClick={(e) => e.stopPropagation()}>
+        <div className="modal-handle" />
+        <div className="modal-head">
+          <h3>تغيير اسم المستخدم</h3>
+          <button className="icon-btn" onClick={onClose}><X size={20} /></button>
+        </div>
+        <p style={{ fontSize: 12.5, color: "var(--ink-soft)", marginBottom: 12, lineHeight: 1.7 }}>
+          اسمك الحالي: <b>@{currentUser.username}</b>. تغييره يغيّر رابط ملفك الشخصي فورًا.
+        </p>
+        <div className="field-group">
+          <label className="field-label">اسم المستخدم الجديد</label>
+          <input
+            className="field-input"
+            value={newUsername}
+            onChange={(e) => setNewUsername(e.target.value)}
+            placeholder="مثال: sara_ahmad"
+            onKeyDown={(e) => e.key === "Enter" && save()}
+          />
+        </div>
+        {error && <div className="field-error"><AlertCircle size={14} /> {error}</div>}
+        <button className="btn-primary" onClick={save} disabled={saving} style={{ marginTop: 8 }}>
+          {saving ? <Loader2 size={18} className="nx-spin" /> : "حفظ الاسم الجديد"}
+        </button>
+      </div>
     </div>
   );
 }
@@ -4435,6 +4761,83 @@ function DeleteAccountModal({ currentUser, onClose, onDeleted, notify }) {
         <button className="btn-primary" style={{ background: "var(--red)", marginTop: 8 }} onClick={doDelete} disabled={!matches || deleting}>
           {deleting ? <Loader2 size={18} className="nx-spin" /> : <><Trash2 size={15} /> حذف حسابي نهائيًا</>}
         </button>
+      </div>
+    </div>
+  );
+}
+
+/* ============================================================
+   نافذة تحليلات المتجر (للحسابات الموثقة)
+   ============================================================ */
+function ShopAnalyticsModal({ shopOwnerId, shop, onClose }) {
+  const [data, setData] = useState(null);
+
+  useEffect(() => {
+    (async () => {
+      const result = await getShopAnalytics(shopOwnerId);
+      setData(result);
+    })();
+  }, [shopOwnerId]);
+
+  const products = shop?.products || [];
+  const topProducts = [...products]
+    .map((p) => ({ ...p, views: p.views || 0 }))
+    .sort((a, b) => b.views - a.views)
+    .slice(0, 3);
+
+  const maxCount = data ? Math.max(1, ...data.dailyData.map((d) => d.count)) : 1;
+
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal-sheet tall" onClick={(e) => e.stopPropagation()}>
+        <div className="modal-handle" />
+        <div className="modal-head">
+          <h3>تحليلات المتجر</h3>
+          <button className="icon-btn" onClick={onClose}><X size={20} /></button>
+        </div>
+
+        {!data ? (
+          <div className="skel-block" style={{ height: 180 }} />
+        ) : (
+          <>
+            <div className="analytics-stats-row">
+              <div className="analytics-stat-card">
+                <Eye size={18} style={{ color: "var(--teal-2)" }} />
+                <b>{data.totalVisits}</b>
+                <span>زيارة (٧ أيام)</span>
+              </div>
+              <div className="analytics-stat-card">
+                <Users size={18} style={{ color: "var(--gold-2)" }} />
+                <b>{data.uniqueVisitors}</b>
+                <span>زائر مختلف</span>
+              </div>
+            </div>
+
+            <h4 className="analytics-section-title">نشاط آخر 7 أيام</h4>
+            <div className="analytics-chart">
+              {data.dailyData.map((d, i) => (
+                <div key={i} className="analytics-bar-col">
+                  <div className="analytics-bar-track">
+                    <div className="analytics-bar-fill" style={{ height: `${(d.count / maxCount) * 100}%` }} />
+                  </div>
+                  <span className="analytics-bar-label">{d.label}</span>
+                </div>
+              ))}
+            </div>
+
+            <h4 className="analytics-section-title">الأكثر مشاهدة</h4>
+            {topProducts.length === 0 && <EmptyState icon={ShoppingBag} title="لا توجد بيانات منتجات كافية بعد" />}
+            {topProducts.map((p) => (
+              <div key={p.id} className="analytics-product-row">
+                <div className="product-img" style={{ width: 40, height: 40, flexShrink: 0, ...(p.image ? { backgroundImage: `url(${p.image})` } : {}) }}>
+                  {!p.image && <ImageIcon size={16} />}
+                </div>
+                <span style={{ flex: 1, fontSize: 13, fontWeight: 600 }}>{p.name}</span>
+                <span className="analytics-views-badge"><Eye size={12} /> {p.views}</span>
+              </div>
+            ))}
+          </>
+        )}
       </div>
     </div>
   );
