@@ -95,15 +95,15 @@ function rowToUser(r) {
     id: r.id, username: r.username, fullName: r.full_name, passHash: r.pass_hash,
     bio: r.bio || "", avatar: r.avatar || "", cover: r.cover || "", location: r.location || "",
     hasShop: r.has_shop || false, isVerified: r.is_verified || false, isAdmin: r.is_admin || false,
-    socialLinks: r.social_links || [], createdAt: r.created_at,
+    suspended: r.suspended || false, socialLinks: r.social_links || [], createdAt: r.created_at,
   };
 }
 function userToRow(u) {
   return {
     id: u.id, username: u.username, full_name: u.fullName, pass_hash: u.passHash,
     bio: u.bio || "", avatar: u.avatar || "", cover: u.cover || "", location: u.location || "",
-    has_shop: u.hasShop || false, is_verified: u.isVerified || false, social_links: u.socialLinks || [],
-    created_at: u.createdAt,
+    has_shop: u.hasShop || false, is_verified: u.isVerified || false, is_admin: u.isAdmin || false,
+    social_links: u.socialLinks || [], suspended: u.suspended || false, created_at: u.createdAt,
   };
 }
 function rowToShop(r) {
@@ -550,6 +550,136 @@ async function getShopAnalytics(shopOwnerId) {
   }
 }
 
+// ---------- لوحة تحكم الأدمن ----------
+async function getAllUsersForAdmin() {
+  try {
+    const { data, error } = await supabase.from("users").select("*").order("created_at", { ascending: false });
+    if (error) throw error;
+    return data.map(rowToUser);
+  } catch (e) {
+    console.error("getAllUsersForAdmin failed", e);
+    return [];
+  }
+}
+
+async function setUserSuspended(userId, suspended, requesterUsername) {
+  if (requesterUsername !== ADMIN_USERNAME) return false;
+  try {
+    const { error } = await supabase.from("users").update({ suspended }).eq("id", userId);
+    if (error) throw error;
+    return true;
+  } catch (e) {
+    console.error("setUserSuspended failed", e);
+    return false;
+  }
+}
+
+async function adminDeleteUser(userId, requesterUsername) {
+  if (requesterUsername !== ADMIN_USERNAME) return false;
+  try {
+    const { error } = await supabase.from("users").delete().eq("id", userId);
+    if (error) throw error;
+    return true;
+  } catch (e) {
+    console.error("adminDeleteUser failed", e);
+    return false;
+  }
+}
+
+async function getAllPostsForAdmin() {
+  try {
+    const ids = (await dbGet(KEYS.posts, true)) || [];
+    const all = await Promise.all(ids.map((id) => dbGet(KEYS.post(id), true)));
+    return all.filter(Boolean).sort((a, b) => b.createdAt - a.createdAt);
+  } catch (e) {
+    console.error("getAllPostsForAdmin failed", e);
+    return [];
+  }
+}
+
+async function adminDeletePost(postId, requesterUsername) {
+  if (requesterUsername !== ADMIN_USERNAME) return false;
+  try {
+    const { error } = await supabase.from("posts").delete().eq("id", postId);
+    if (error) throw error;
+    return true;
+  } catch (e) {
+    console.error("adminDeletePost failed", e);
+    return false;
+  }
+}
+
+// ---------- تسجيل الدخول بجوجل ----------
+async function signInWithGoogle() {
+  try {
+    const { error } = await supabase.auth.signInWithOAuth({
+      provider: "google",
+      options: { redirectTo: window.location.origin + window.location.pathname },
+    });
+    if (error) throw error;
+    return true;
+  } catch (e) {
+    console.error("signInWithGoogle failed", e);
+    return false;
+  }
+}
+
+async function getGoogleAuthSession() {
+  try {
+    const { data, error } = await supabase.auth.getSession();
+    if (error) throw error;
+    return data.session;
+  } catch (e) {
+    console.error("getGoogleAuthSession failed", e);
+    return null;
+  }
+}
+
+async function findUserByAuthId(authUserId) {
+  try {
+    const { data, error } = await supabase.from("users").select("*").eq("auth_user_id", authUserId).maybeSingle();
+    if (error) throw error;
+    return rowToUser(data);
+  } catch (e) {
+    console.error("findUserByAuthId failed", e);
+    return null;
+  }
+}
+
+async function createUserFromGoogle(authUserId, email, suggestedUsername, fullName) {
+  try {
+    const id = uid("u");
+    const newUser = {
+      id, username: suggestedUsername, fullName: fullName || suggestedUsername,
+      passHash: "", bio: "", avatar: "", cover: "", location: "",
+      createdAt: Date.now(), hasShop: false,
+    };
+    const row = { ...userToRow(newUser), auth_user_id: authUserId, email };
+    const { error } = await supabase.from("users").insert(row);
+    if (error) throw error;
+    return newUser;
+  } catch (e) {
+    console.error("createUserFromGoogle failed", e);
+    lastDbErrorMessage = (e && e.message) ? e.message : String(e);
+    return null;
+  }
+}
+
+async function isUsernameTaken(username) {
+  try {
+    const { data } = await supabase.from("users").select("id").eq("username", username).maybeSingle();
+    return !!data;
+  } catch {
+    return false;
+  }
+}
+
+async function signOutGoogle() {
+  try {
+    await supabase.auth.signOut();
+  } catch {}
+}
+
 // ---------- الرسائل الخاصة ----------
 function conversationId(userIdA, userIdB) {
   return [userIdA, userIdB].sort().join("__");
@@ -722,6 +852,7 @@ function playMessageSound() {
 export default function NexaApp() {
   const [booting, setBooting] = useState(true);
   const [currentUser, setCurrentUser] = useState(null); // { id, username, ... }
+  const [googleSignupSession, setGoogleSignupSession] = useState(null);
   const [view, setView] = useState("feed"); // feed | shop | jobs | profile | shopPage | jobDetail | auth
   const [viewParam, setViewParam] = useState(null);
   const [toast, setToast] = useState(null);
@@ -747,7 +878,23 @@ export default function NexaApp() {
         const localId = localStorage.getItem(LOCAL_SESSION_KEY);
         if (localId) {
           const u = await dbGet(KEYS.users(localId), true);
-          if (u) setCurrentUser(u);
+          if (u) {
+            setCurrentUser(u);
+            setBooting(false);
+            return;
+          }
+        }
+        // تحقق من وجود جلسة جوجل نشطة (المستخدم رجع من شاشة موافقة جوجل)
+        const session = await getGoogleAuthSession();
+        if (session?.user) {
+          const existingUser = await findUserByAuthId(session.user.id);
+          if (existingUser) {
+            setCurrentUser(existingUser);
+            try { localStorage.setItem(LOCAL_SESSION_KEY, existingUser.id); } catch {}
+          } else {
+            // حساب جوجل جديد، يحتاج اختيار اسم مستخدم لإكمال التسجيل
+            setGoogleSignupSession(session);
+          }
         }
       } catch {}
       setBooting(false);
@@ -785,6 +932,7 @@ export default function NexaApp() {
     try {
       localStorage.removeItem(LOCAL_SESSION_KEY);
     } catch {}
+    signOutGoogle();
     setView("feed");
   };
 
@@ -806,6 +954,20 @@ export default function NexaApp() {
   }
 
   if (!currentUser) {
+    if (googleSignupSession) {
+      return (
+        <div className="nexa-root">
+          <NexaStyles />
+          <GoogleSignupCompleteScreen
+            session={googleSignupSession}
+            onComplete={(user) => { setGoogleSignupSession(null); handleLogin(user); }}
+            onCancel={async () => { await signOutGoogle(); setGoogleSignupSession(null); }}
+            notify={notify}
+          />
+          {toast && <Toast toast={toast} />}
+        </div>
+      );
+    }
     return (
       <div className="nexa-root">
         <NexaStyles />
@@ -965,6 +1127,14 @@ function NexaStyles() {
         width: 100%; padding: 13px; border-radius: 12px; border: 1.5px solid var(--line); background: #fff;
         font-weight: 700; font-size: 14.5px; color: var(--ink); display:flex; align-items:center; justify-content:center; gap:8px;
       }
+      .auth-divider { display: flex; align-items: center; text-align: center; margin: 16px 0; color: var(--ink-soft); font-size: 12px; }
+      .auth-divider::before, .auth-divider::after { content: ""; flex: 1; height: 1px; background: var(--line); }
+      .auth-divider span { padding: 0 10px; }
+      .btn-google {
+        width: 100%; padding: 13px; border-radius: 12px; border: 1.5px solid var(--line); background: #fff;
+        font-weight: 700; font-size: 14px; color: var(--ink); display: flex; align-items: center; justify-content: center; gap: 10px;
+      }
+      .btn-google:hover { background: var(--paper-2); }
       .auth-hint { text-align:center; font-size: 12.5px; color: var(--ink-soft); margin-top: 16px; line-height: 1.8; }
       .auth-disclaimer {
         background: #FFF6E3; border: 1px solid #F0DCA0; border-radius: 12px; padding: 11px 13px;
@@ -1513,6 +1683,21 @@ function NexaStyles() {
       .review-body h4 { font-size: 15px; font-weight: 800; margin-bottom: 4px; }
       .review-desc { font-size: 12.5px; color: var(--ink-soft); line-height: 1.7; margin-top: 8px; }
 
+      /* ---- لوحة تحكم الأدمن ---- */
+      .admin-row { display: flex; align-items: center; gap: 10px; padding: 12px; background: #fff; border-radius: 14px; margin-bottom: 9px; border: 1px solid var(--line); }
+      .admin-row-main { display: flex; align-items: center; gap: 10px; flex: 1; min-width: 0; cursor: pointer; }
+      .admin-row-text { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+      .admin-row-name { font-size: 13px; font-weight: 700; display: inline-flex; align-items: center; gap: 5px; }
+      .admin-row-sub { font-size: 11px; color: var(--ink-soft); font-weight: 500; }
+      .admin-post-preview { font-size: 12px; color: var(--ink-soft); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 220px; }
+      .admin-row-actions { display: flex; flex-direction: column; gap: 6px; flex-shrink: 0; }
+      .admin-action-btn {
+        background: var(--paper-2); border: none; border-radius: 9px; padding: 6px 10px; font-size: 11px;
+        font-weight: 700; color: var(--ink-soft); display: flex; align-items: center; gap: 4px; white-space: nowrap;
+      }
+      .admin-action-btn.danger { background: #FBE8E6; color: var(--red); }
+      .suspended-tag { background: var(--red); color: #fff; font-size: 9.5px; font-weight: 800; padding: 2px 7px; border-radius: 999px; }
+
       @media (max-width: 380px) {
         .shop-grid, .products-grid { grid-template-columns: 1fr 1fr; gap: 9px; }
       }
@@ -1608,6 +1793,11 @@ function AuthScreen({ onLogin, notify }) {
           setLoading(false);
           return;
         }
+        if (userObj.suspended) {
+          setError("هذا الحساب معلَّق حاليًا ولا يمكن تسجيل الدخول إليه. تواصل مع الإدارة لمزيد من المعلومات.");
+          setLoading(false);
+          return;
+        }
         notify(`أهلًا بعودتك، ${userObj.fullName} 👋`);
         onLogin(userObj);
       }
@@ -1700,6 +1890,22 @@ function AuthScreen({ onLogin, notify }) {
           </button>
         </div>
 
+        <div className="auth-divider"><span>أو</span></div>
+
+        <button className="btn-google" onClick={async () => {
+          setError("");
+          const ok = await signInWithGoogle();
+          if (!ok) setError("تعذّر بدء تسجيل الدخول بجوجل، حاول مجددًا");
+        }}>
+          <svg width="18" height="18" viewBox="0 0 48 48">
+            <path fill="#FFC107" d="M43.6 20.5H42V20H24v8h11.3c-1.6 4.7-6.1 8-11.3 8-6.6 0-12-5.4-12-12s5.4-12 12-12c3.1 0 5.9 1.1 8.1 3l5.7-5.7C34.5 6.1 29.5 4 24 4 12.9 4 4 12.9 4 24s8.9 20 20 20 20-8.9 20-20c0-1.2-.1-2.4-.4-3.5z"/>
+            <path fill="#FF3D00" d="M6.3 14.7l6.6 4.8C14.6 15.4 18.9 12 24 12c3.1 0 5.9 1.1 8.1 3l5.7-5.7C34.5 6.1 29.5 4 24 4c-7.6 0-14.1 4.3-17.7 10.7z"/>
+            <path fill="#4CAF50" d="M24 44c5.4 0 10.3-2.1 14-5.4l-6.4-5.4C29.5 34.6 26.9 35.5 24 35.5c-5.2 0-9.6-3.3-11.3-8l-6.6 5.1C9.9 39.6 16.4 44 24 44z"/>
+            <path fill="#1976D2" d="M43.6 20.5H42V20H24v8h11.3c-.8 2.3-2.3 4.2-4.2 5.6l6.4 5.4C40.9 36 44 30.5 44 24c0-1.2-.1-2.4-.4-3.5z"/>
+          </svg>
+          الدخول باستخدام جوجل
+        </button>
+
         <p className="auth-hint">
           {mode === "login" ? "لا تملك حسابًا؟" : "لديك حساب بالفعل؟"}{" "}
           <a href="#" onClick={(e) => { e.preventDefault(); setMode(mode === "login" ? "signup" : "login"); setError(""); }} style={{ color: "var(--gold-2)", fontWeight: 700 }}>
@@ -1785,6 +1991,11 @@ function AppShell({ currentUser, setCurrentUser, view, viewParam, goTo, onLogout
             <button onClick={() => { goTo("profile"); setMenuOpen(false); }}>
               <User size={16} /> حسابي
             </button>
+            {currentUser.username === ADMIN_USERNAME && (
+              <button onClick={() => { goTo("adminDashboard"); setMenuOpen(false); }}>
+                <ShieldCheck size={16} /> لوحة تحكم الأدمن
+              </button>
+            )}
             <button onClick={() => { goTo("settings"); setMenuOpen(false); }}>
               <Settings size={16} /> الإعدادات
             </button>
@@ -1840,6 +2051,9 @@ function AppShell({ currentUser, setCurrentUser, view, viewParam, goTo, onLogout
         )}
         {view === "support" && <SupportView goTo={goTo} />}
         {view === "settings" && <SettingsView currentUser={currentUser} setCurrentUser={setCurrentUser} goTo={goTo} notify={notify} onLogout={onLogout} />}
+        {view === "adminDashboard" && currentUser.username === ADMIN_USERNAME && (
+          <AdminDashboardView currentUser={currentUser} goTo={goTo} notify={notify} />
+        )}
       </main>
 
       <nav className="bottom-nav">
@@ -2601,7 +2815,7 @@ function PostCard({ post, author, currentUser, goTo, onChanged, notify }) {
     setConfirmDelete(false);
   };
 
-  const canPin = isOwnPost && (currentUser.isVerified || currentUser.username === ADMIN_USERNAME);
+  const canPin = isOwnPost && currentUser.username === ADMIN_USERNAME;
 
   const togglePin = async () => {
     setMenuOpen(false);
@@ -4838,6 +5052,281 @@ function ShopAnalyticsModal({ shopOwnerId, shop, onClose }) {
             ))}
           </>
         )}
+      </div>
+    </div>
+  );
+}
+
+/* ============================================================
+   لوحة تحكم الأدمن
+   ============================================================ */
+function AdminDashboardView({ currentUser, goTo, notify }) {
+  const [tab, setTab] = useState("users"); // users | posts
+  const [users, setUsers] = useState(null);
+  const [posts, setPosts] = useState(null);
+  const [usersCache, setUsersCache] = useState({});
+  const [query, setQuery] = useState("");
+  const [confirmAction, setConfirmAction] = useState(null); // { type, target }
+
+  const loadUsers = useCallback(async () => {
+    const list = await getAllUsersForAdmin();
+    setUsers(list);
+  }, []);
+
+  const loadPosts = useCallback(async () => {
+    const list = await getAllPostsForAdmin();
+    setPosts(list);
+    const authorIds = [...new Set(list.map((p) => p.authorId))];
+    const fetched = await Promise.all(authorIds.map((id) => dbGet(KEYS.users(id), true)));
+    const map = {};
+    authorIds.forEach((id, i) => { if (fetched[i]) map[id] = fetched[i]; });
+    setUsersCache(map);
+  }, []);
+
+  useEffect(() => {
+    loadUsers();
+    loadPosts();
+  }, [loadUsers, loadPosts]);
+
+  const filteredUsers = useMemo(() => {
+    if (!users) return null;
+    const q = query.trim().toLowerCase();
+    if (!q) return users;
+    return users.filter((u) => u.username.toLowerCase().includes(q) || u.fullName.toLowerCase().includes(q));
+  }, [users, query]);
+
+  const filteredPosts = useMemo(() => {
+    if (!posts) return null;
+    const q = query.trim().toLowerCase();
+    if (!q) return posts;
+    return posts.filter((p) => {
+      const author = usersCache[p.authorId];
+      return p.text?.toLowerCase().includes(q) || author?.username?.toLowerCase().includes(q) || author?.fullName?.toLowerCase().includes(q);
+    });
+  }, [posts, query, usersCache]);
+
+  const handleToggleSuspend = async (user) => {
+    const ok = await setUserSuspended(user.id, !user.suspended, currentUser.username);
+    if (ok) {
+      notify(!user.suspended ? `تم تعليق حساب ${user.username}` : `تم إلغاء تعليق حساب ${user.username}`);
+      loadUsers();
+    } else {
+      notify("تعذّر تنفيذ الإجراء", "error");
+    }
+    setConfirmAction(null);
+  };
+
+  const handleDeleteUser = async (user) => {
+    const ok = await adminDeleteUser(user.id, currentUser.username);
+    if (ok) {
+      notify(`تم حذف حساب ${user.username} نهائيًا`);
+      loadUsers();
+    } else {
+      notify("تعذّر حذف الحساب", "error");
+    }
+    setConfirmAction(null);
+  };
+
+  const handleDeletePost = async (post) => {
+    const ok = await adminDeletePost(post.id, currentUser.username);
+    if (ok) {
+      notify("تم حذف المنشور");
+      loadPosts();
+    } else {
+      notify("تعذّر حذف المنشور", "error");
+    }
+    setConfirmAction(null);
+  };
+
+  return (
+    <div className="page-pad">
+      <PageHeader title="لوحة تحكم الأدمن" onBack={() => goTo("feed")} />
+
+      <div className="cat-scroll" style={{ marginBottom: 12 }}>
+        <button className={`cat-chip ${tab === "users" ? "active" : ""}`} onClick={() => setTab("users")}>
+          <Users size={13} style={{ marginLeft: 4 }} /> المستخدمون ({users?.length ?? "…"})
+        </button>
+        <button className={`cat-chip ${tab === "posts" ? "active" : ""}`} onClick={() => setTab("posts")}>
+          <MessageCircle size={13} style={{ marginLeft: 4 }} /> المنشورات ({posts?.length ?? "…"})
+        </button>
+      </div>
+
+      <div className="shops-search-row">
+        <Search size={17} className="search-icon" />
+        <input
+          className="field-input search-input"
+          placeholder={tab === "users" ? "ابحث باسم المستخدم..." : "ابحث في نص المنشورات..."}
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+        />
+      </div>
+
+      {tab === "users" && (
+        <>
+          {filteredUsers === null && <div className="skel-block" style={{ height: 200 }} />}
+          {filteredUsers && filteredUsers.length === 0 && <EmptyState icon={Users} title="لا يوجد مستخدمون مطابقون" />}
+          {filteredUsers && filteredUsers.map((u) => (
+            <div key={u.id} className="admin-row">
+              <div className="admin-row-main" onClick={() => goTo("userProfile", u.id)}>
+                <Avatar user={u} size={42} />
+                <div className="admin-row-text">
+                  <span className="admin-row-name">
+                    {u.fullName}
+                    <UserBadge user={u} size={12} style={{ marginRight: 3 }} />
+                    {u.suspended && <span className="suspended-tag">معلَّق</span>}
+                  </span>
+                  <span className="admin-row-sub">@{u.username}</span>
+                </div>
+              </div>
+              {u.username !== ADMIN_USERNAME && (
+                <div className="admin-row-actions">
+                  <button
+                    className="admin-action-btn"
+                    onClick={() => setConfirmAction({ type: "suspend", target: u })}
+                  >
+                    {u.suspended ? <UserCheck size={14} /> : <EyeOff size={14} />}
+                    {u.suspended ? "إلغاء التعليق" : "تعليق"}
+                  </button>
+                  <button
+                    className="admin-action-btn danger"
+                    onClick={() => setConfirmAction({ type: "deleteUser", target: u })}
+                  >
+                    <Trash2 size={14} /> حذف
+                  </button>
+                </div>
+              )}
+            </div>
+          ))}
+        </>
+      )}
+
+      {tab === "posts" && (
+        <>
+          {filteredPosts === null && <div className="skel-block" style={{ height: 200 }} />}
+          {filteredPosts && filteredPosts.length === 0 && <EmptyState icon={MessageCircle} title="لا توجد منشورات مطابقة" />}
+          {filteredPosts && filteredPosts.map((p) => {
+            const author = usersCache[p.authorId];
+            return (
+              <div key={p.id} className="admin-row">
+                <div className="admin-row-main" onClick={() => goTo("userProfile", p.authorId)}>
+                  <Avatar user={author} size={36} />
+                  <div className="admin-row-text">
+                    <span className="admin-row-name">{author?.fullName || "مستخدم"} <span className="admin-row-sub">@{author?.username}</span></span>
+                    <span className="admin-post-preview">{p.text || (p.mediaUrl ? "📷 يحتوي صورة/فيديو" : "")}</span>
+                  </div>
+                </div>
+                <button className="admin-action-btn danger" onClick={() => setConfirmAction({ type: "deletePost", target: p })}>
+                  <Trash2 size={14} /> حذف
+                </button>
+              </div>
+            );
+          })}
+        </>
+      )}
+
+      {confirmAction && confirmAction.type === "suspend" && (
+        <ConfirmModal
+          title={confirmAction.target.suspended ? "إلغاء تعليق الحساب؟" : "تعليق الحساب؟"}
+          text={confirmAction.target.suspended ? `سيتمكن @${confirmAction.target.username} من تسجيل الدخول مجددًا.` : `لن يتمكن @${confirmAction.target.username} من تسجيل الدخول حتى تُلغي التعليق.`}
+          confirmLabel={confirmAction.target.suspended ? "إلغاء التعليق" : "تعليق"}
+          danger={!confirmAction.target.suspended}
+          onConfirm={() => handleToggleSuspend(confirmAction.target)}
+          onCancel={() => setConfirmAction(null)}
+        />
+      )}
+      {confirmAction && confirmAction.type === "deleteUser" && (
+        <ConfirmModal
+          title="حذف الحساب نهائيًا؟"
+          text={`سيتم حذف حساب @${confirmAction.target.username} ومتجره ومنشوراته ومحادثاته نهائيًا. لا يمكن التراجع.`}
+          confirmLabel="حذف نهائيًا"
+          danger
+          onConfirm={() => handleDeleteUser(confirmAction.target)}
+          onCancel={() => setConfirmAction(null)}
+        />
+      )}
+      {confirmAction && confirmAction.type === "deletePost" && (
+        <ConfirmModal
+          title="حذف المنشور؟"
+          text="سيتم حذف هذا المنشور نهائيًا."
+          confirmLabel="حذف"
+          danger
+          onConfirm={() => handleDeletePost(confirmAction.target)}
+          onCancel={() => setConfirmAction(null)}
+        />
+      )}
+    </div>
+  );
+}
+
+/* ============================================================
+   شاشة إكمال التسجيل بعد الدخول بجوجل (اختيار اسم مستخدم)
+   ============================================================ */
+function GoogleSignupCompleteScreen({ session, onComplete, onCancel, notify }) {
+  const googleEmail = session?.user?.email || "";
+  const googleName = session?.user?.user_metadata?.full_name || session?.user?.user_metadata?.name || "";
+  const suggested = (googleEmail.split("@")[0] || "user").toLowerCase().replace(/[^a-z0-9_]/g, "");
+
+  const [username, setUsername] = useState(suggested);
+  const [fullName, setFullName] = useState(googleName);
+  const [error, setError] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  const normalize = (s) => s.trim().toLowerCase().replace(/\s+/g, "").replace(/[^a-z0-9_\u0600-\u06FF]/g, "");
+
+  const finish = async () => {
+    setError("");
+    const clean = normalize(username);
+    if (!clean || clean.length < 3) { setError("اسم المستخدم يجب أن يكون 3 أحرف على الأقل"); return; }
+    setSaving(true);
+    const taken = await isUsernameTaken(clean);
+    if (taken) {
+      setError("اسم المستخدم هذا محجوز، جرّب اسمًا آخر");
+      setSaving(false);
+      return;
+    }
+    const newUser = await createUserFromGoogle(session.user.id, googleEmail, clean, fullName.trim() || clean);
+    setSaving(false);
+    if (newUser) {
+      notify("تم إنشاء حسابك بنجاح، مرحبًا بك في نِكسا 🎉");
+      onComplete(newUser);
+    } else {
+      setError("تعذّر إنشاء الحساب، حاول مجددًا");
+    }
+  };
+
+  return (
+    <div className="auth-screen">
+      <div className="auth-pattern" />
+      <div className="auth-top">
+        <div className="auth-brand-row">
+          <NexaLogo size={42} />
+          <span className="auth-brand-name">نِكسا</span>
+        </div>
+        <p className="auth-tagline">خطوة أخيرة لإكمال حسابك المرتبط بـ {googleEmail}</p>
+      </div>
+
+      <div className="auth-card">
+        <div className="field-group">
+          <label className="field-label">الاسم الكامل</label>
+          <input className="field-input" value={fullName} onChange={(e) => setFullName(e.target.value)} placeholder="مثال: سارة أحمد" />
+        </div>
+        <div className="field-group">
+          <label className="field-label">اختر اسم مستخدم</label>
+          <input
+            className="field-input"
+            value={username}
+            onChange={(e) => setUsername(e.target.value)}
+            placeholder="بدون مسافات، مثل: sara_ahmad"
+            onKeyDown={(e) => e.key === "Enter" && finish()}
+          />
+        </div>
+        {error && <div className="field-error"><AlertCircle size={14} /> {error}</div>}
+        <button className="btn-primary" onClick={finish} disabled={saving} style={{ marginTop: 8 }}>
+          {saving ? <Loader2 size={18} className="nx-spin" /> : "إكمال إنشاء الحساب"}
+        </button>
+        <button className="btn-ghost" onClick={onCancel} style={{ marginTop: 10 }}>
+          إلغاء
+        </button>
       </div>
     </div>
   );
