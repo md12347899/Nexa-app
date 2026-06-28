@@ -1288,6 +1288,44 @@ function NexaStyles() {
       }
       .uploader-hint { font-size: 11.5px; color: var(--ink-soft); margin: 10px 0 6px; }
 
+      .compact-box { width: 100%; height: 100%; border-radius: 12px; color: var(--ink-soft); }
+      .media-uploader.compact { width: 100%; height: 100%; }
+
+      /* ---- معرض صور المنتج المتعدد (في المعالج) ---- */
+      .product-images-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+      .product-image-slot { position: relative; aspect-ratio: 1; border-radius: 12px; overflow: hidden; border: 1px solid var(--line); }
+      .product-image-slot img { width: 100%; height: 100%; object-fit: cover; display: block; }
+      .remove-image-btn {
+        position: absolute; top: 4px; left: 4px; width: 20px; height: 20px; border-radius: 50%; background: rgba(0,0,0,0.6);
+        color: #fff; border: none; display: flex; align-items: center; justify-content: center;
+      }
+      .main-image-tag {
+        position: absolute; bottom: 4px; right: 4px; background: var(--gold-2); color: #fff; font-size: 9px;
+        font-weight: 700; padding: 2px 6px; border-radius: 999px;
+      }
+
+      /* ---- عارض المنتج (صور + فيديو) ---- */
+      .product-main-media { width: 100%; aspect-ratio: 1.2; border-radius: 14px; overflow: hidden; background: var(--paper-2); margin-bottom: 10px; }
+      .product-main-media-el { width: 100%; height: 100%; object-fit: cover; display: block; }
+      .product-thumbs-row { display: flex; gap: 7px; margin-bottom: 10px; overflow-x: auto; }
+      .product-thumb { width: 52px; height: 52px; border-radius: 10px; overflow: hidden; border: 2px solid transparent; flex-shrink: 0; padding: 0; background: var(--paper-2); }
+      .product-thumb.active { border-color: var(--gold-2); }
+      .product-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+      .product-thumb-video { width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; color: var(--ink-soft); }
+
+      /* ---- سلة التسوق ---- */
+      .cart-fab {
+        position: fixed; bottom: 80px; left: 18px; z-index: 40; background: var(--teal); color: #fff; border: none;
+        border-radius: 50%; width: 54px; height: 54px; display: flex; align-items: center; justify-content: center;
+        box-shadow: var(--shadow); 
+      }
+      .cart-fab-badge {
+        position: absolute; top: -4px; right: -4px; background: var(--red); color: #fff; font-size: 10px; font-weight: 800;
+        min-width: 18px; height: 18px; border-radius: 999px; display: flex; align-items: center; justify-content: center;
+        border: 2px solid #fff;
+      }
+      .cart-item-row { display: flex; align-items: center; gap: 10px; padding: 9px 0; border-bottom: 1px solid var(--line); }
+
       /* ---- النوافذ المنبثقة (Modals) ---- */
       .modal-overlay { position: fixed; inset: 0; background: rgba(14,30,28,0.55); z-index: 200; display: flex; align-items: flex-end; justify-content: center; animation: fadeIn 0.15s; }
       @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
@@ -2575,7 +2613,7 @@ function UserBadge({ user, size = 14, style }) {
 /* ============================================================
    رافع الصور/الفيديو من الجهاز (Supabase Storage)
    ============================================================ */
-function MediaUploader({ value, onChange, folder = "general", accept = "image/*", label, shape = "rect", height = 140 }) {
+function MediaUploader({ value, onChange, folder = "general", accept = "image/*", label, shape = "rect", height = 140, compact = false }) {
   const inputRef = useRef(null);
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState("");
@@ -2595,10 +2633,23 @@ function MediaUploader({ value, onChange, folder = "general", accept = "image/*"
     setUploading(false);
     if (url) {
       onChange(url);
+      if (compact && inputRef.current) inputRef.current.value = ""; // إعادة تصفير المدخل لاستقبال صورة جديدة فورًا
     } else {
       setError("تعذّر رفع الملف، حاول مجددًا");
     }
   };
+
+  if (compact) {
+    return (
+      <div className="media-uploader compact">
+        <div className="uploader-box compact-box" style={{ height }} onClick={() => !uploading && inputRef.current?.click()}>
+          {uploading ? <Loader2 size={18} className="nx-spin" /> : <Plus size={20} />}
+        </div>
+        <input ref={inputRef} type="file" accept={accept} style={{ display: "none" }} onChange={handleFile} />
+        {error && <div className="field-error" style={{ fontSize: 11 }}><AlertCircle size={12} /> {error}</div>}
+      </div>
+    );
+  }
 
   return (
     <div className="media-uploader">
@@ -3057,7 +3108,48 @@ function ShopPage({ shopOwnerId, currentUser, goTo, notify }) {
   const [shopTab, setShopTab] = useState("products"); // posts | about | products
   const [shopPosts, setShopPosts] = useState(null);
   const [analyticsOpen, setAnalyticsOpen] = useState(false);
+  const [cart, setCart] = useState(() => {
+    try {
+      const saved = localStorage.getItem(`nexa_cart_${shopOwnerId}`);
+      return saved ? JSON.parse(saved) : [];
+    } catch { return []; }
+  });
+  const [cartOpen, setCartOpen] = useState(false);
   const isOwner = currentUser.id === shopOwnerId;
+
+  const saveCart = (next) => {
+    setCart(next);
+    try { localStorage.setItem(`nexa_cart_${shopOwnerId}`, JSON.stringify(next)); } catch {}
+  };
+
+  const addToCart = (product) => {
+    if (cart.some((p) => p.id === product.id)) {
+      notify("هذا المنتج موجود في سلتك بالفعل");
+      return;
+    }
+    saveCart([...cart, { id: product.id, name: product.name, price: product.price, image: product.images?.[0] || product.image || "" }]);
+    notify("تمت الإضافة للسلة");
+  };
+
+  const removeFromCart = (productId) => {
+    saveCart(cart.filter((p) => p.id !== productId));
+  };
+
+  const checkout = async () => {
+    if (cart.length === 0) return;
+    const lines = cart.map((p) => `• ${p.name}${p.price ? ` — ${p.price}` : ""}`).join("\n");
+    const message = `مرحبًا، أريد حجز/طلب المنتجات التالية من متجرك:\n\n${lines}\n\nهل يمكننا التواصل لإتمام الطلب؟`;
+    const ok = await sendMessage(currentUser.id, shopOwnerId, message, "");
+    if (ok) {
+      createNotification(shopOwnerId, "message", currentUser.id);
+      saveCart([]);
+      setCartOpen(false);
+      notify("تم إرسال طلبك للتاجر، يمكنك متابعة المحادثة الآن");
+      goTo("chat", shopOwnerId);
+    } else {
+      notify("تعذّر إرسال الطلب، حاول مجددًا", "error");
+    }
+  };
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -3090,7 +3182,12 @@ function ShopPage({ shopOwnerId, currentUser, goTo, notify }) {
     const updatedShop = { ...shop, products: updatedProducts };
     setShop(updatedShop); // تحديث فوري في الواجهة
     dbSet(KEYS.shop(shopOwnerId), updatedShop, true); // حفظ في الخلفية بدون انتظار
-    setProductModal({ ...p, viewOnly: true });
+    setProductModal({
+      ...p,
+      viewOnly: true,
+      onAddToCart: isOwner ? null : addToCart,
+      inCart: cart.some((c) => c.id === p.id),
+    });
   };
 
   if (loading) {
@@ -3267,6 +3364,111 @@ function ShopPage({ shopOwnerId, currentUser, goTo, notify }) {
       {analyticsOpen && (
         <ShopAnalyticsModal shopOwnerId={shopOwnerId} shop={shop} onClose={() => setAnalyticsOpen(false)} />
       )}
+
+      {!isOwner && cart.length > 0 && (
+        <button className="cart-fab" onClick={() => setCartOpen(true)}>
+          <ShoppingBag size={20} />
+          <span className="cart-fab-badge">{cart.length}</span>
+        </button>
+      )}
+
+      {cartOpen && (
+        <div className="modal-overlay" onClick={() => setCartOpen(false)}>
+          <div className="modal-sheet" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-handle" />
+            <div className="modal-head">
+              <h3>سلتك من هذا المتجر</h3>
+              <button className="icon-btn" onClick={() => setCartOpen(false)}><X size={20} /></button>
+            </div>
+            {cart.length === 0 ? (
+              <EmptyState icon={ShoppingBag} title="سلتك فاضية" />
+            ) : (
+              <>
+                {cart.map((p) => (
+                  <div key={p.id} className="cart-item-row">
+                    <div className="product-img" style={{ width: 46, height: 46, flexShrink: 0, ...(p.image ? { backgroundImage: `url(${p.image})` } : {}) }}>
+                      {!p.image && <ImageIcon size={16} />}
+                    </div>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontSize: 13, fontWeight: 700 }}>{p.name}</div>
+                      {p.price && <div className="product-price" style={{ fontSize: 12 }}>{p.price}</div>}
+                    </div>
+                    <button className="icon-btn" onClick={() => removeFromCart(p.id)}><Trash2 size={15} /></button>
+                  </div>
+                ))}
+                <button className="btn-primary btn-gold" style={{ marginTop: 14 }} onClick={checkout}>
+                  <MessageSquare size={16} /> تأكيد الطلب والتواصل مع التاجر
+                </button>
+              </>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ProductViewModal({ product, onClose, onAddToCart, inCart }) {
+  const allMedia = [
+    ...(product.images?.length ? product.images : product.image ? [product.image] : []).map((url) => ({ type: "image", url })),
+    ...(product.video ? [{ type: "video", url: product.video }] : []),
+  ];
+  const [activeIdx, setActiveIdx] = useState(0);
+  const active = allMedia[activeIdx];
+
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal-sheet" onClick={(e) => e.stopPropagation()}>
+        <div className="modal-handle" />
+        <div className="modal-head">
+          <h3>تفاصيل المنتج</h3>
+          <button className="icon-btn" onClick={onClose}><X size={20} /></button>
+        </div>
+
+        {allMedia.length > 0 && (
+          <>
+            <div className="product-main-media">
+              {active.type === "video" ? (
+                <video src={active.url} className="product-main-media-el" controls />
+              ) : (
+                <img src={active.url} alt="" className="product-main-media-el" />
+              )}
+            </div>
+            {allMedia.length > 1 && (
+              <div className="product-thumbs-row">
+                {allMedia.map((m, i) => (
+                  <button key={i} className={`product-thumb ${i === activeIdx ? "active" : ""}`} onClick={() => setActiveIdx(i)}>
+                    {m.type === "video" ? (
+                      <div className="product-thumb-video"><Video size={16} /></div>
+                    ) : (
+                      <img src={m.url} alt="" />
+                    )}
+                  </button>
+                ))}
+              </div>
+            )}
+          </>
+        )}
+
+        <h4 style={{ margin: "12px 0 4px" }}>{product.name}</h4>
+        {product.price && <div className="product-price" style={{ fontSize: 15, marginBottom: 8 }}>{product.price}</div>}
+        <p style={{ color: "var(--ink-soft)", lineHeight: 1.7, fontSize: 14 }}>{product.description || "لا يوجد وصف."}</p>
+        {product.shippingInfo && (
+          <div className="shop-payment-card" style={{ marginTop: 12, marginInline: 0 }}>
+            <ShoppingBag size={16} />
+            <div>
+              <div className="spc-title">معلومات الشحن</div>
+              <div className="spc-value">{product.shippingInfo}</div>
+            </div>
+          </div>
+        )}
+
+        {onAddToCart && (
+          <button className={`btn-primary ${inCart ? "" : "btn-gold"}`} style={{ marginTop: 14 }} onClick={() => onAddToCart(product)}>
+            {inCart ? <><CheckCircle2 size={16} /> أُضيف للسلة</> : <><ShoppingBag size={16} /> أضف للسلة</>}
+          </button>
+        )}
+      </div>
     </div>
   );
 }
@@ -3276,7 +3478,9 @@ function ProductModal({ product, isOwner, onClose, onSave, onDelete }) {
   const viewOnly = product.viewOnly;
   const [step, setStep] = useState(1); // 1=المنتج 2=التفاصيل 3=الشحن 4=نشر
   const [name, setName] = useState(product.name || "");
-  const [image, setImage] = useState(product.image || "");
+  // التوافق مع المنتجات القديمة: لو كان عندها image مفرد قديم، نضمّه لمصفوفة الصور الجديدة
+  const [images, setImages] = useState(product.images?.length ? product.images : (product.image ? [product.image] : []));
+  const [video, setVideo] = useState(product.video || "");
   const [price, setPrice] = useState(product.price || "");
   const [desc, setDesc] = useState(product.description || "");
   const [category, setCategory] = useState(product.category || "");
@@ -3285,6 +3489,7 @@ function ProductModal({ product, isOwner, onClose, onSave, onDelete }) {
 
   const totalSteps = 4;
   const stepLabels = ["المنتج", "التفاصيل", "الشحن", "نشر"];
+  const MAX_IMAGES = 5;
 
   const goNext = () => {
     setError("");
@@ -3300,37 +3505,32 @@ function ProductModal({ product, isOwner, onClose, onSave, onDelete }) {
       name: name.trim(),
       price: price.trim(),
       description: desc.trim(),
-      image: image.trim(),
+      images: images,
+      image: images[0] || "", // نحافظ على هذا الحقل لأي كود قديم يقرأه
+      video: video.trim(),
       category: category.trim(),
       shippingInfo: shippingInfo.trim(),
+      views: product.views || 0,
       createdAt: product.createdAt || Date.now(),
     });
   };
 
+  const addImageSlot = (url) => {
+    if (!url) return;
+    setImages((imgs) => [...imgs, url].slice(0, MAX_IMAGES));
+  };
+  const removeImageAt = (idx) => {
+    setImages((imgs) => imgs.filter((_, i) => i !== idx));
+  };
+
   if (viewOnly) {
     return (
-      <div className="modal-overlay" onClick={onClose}>
-        <div className="modal-sheet" onClick={(e) => e.stopPropagation()}>
-          <div className="modal-handle" />
-          <div className="modal-head">
-            <h3>تفاصيل المنتج</h3>
-            <button className="icon-btn" onClick={onClose}><X size={20} /></button>
-          </div>
-          {image && <img src={image} alt="" className="composer-preview" style={{ marginBottom: 10 }} />}
-          <h4 style={{ margin: "4px 0" }}>{name}</h4>
-          {price && <div className="product-price" style={{ fontSize: 15, marginBottom: 8 }}>{price}</div>}
-          <p style={{ color: "var(--ink-soft)", lineHeight: 1.7, fontSize: 14 }}>{desc || "لا يوجد وصف."}</p>
-          {shippingInfo && (
-            <div className="shop-payment-card" style={{ marginTop: 12, marginInline: 0 }}>
-              <ShoppingBag size={16} />
-              <div>
-                <div className="spc-title">معلومات الشحن</div>
-                <div className="spc-value">{shippingInfo}</div>
-              </div>
-            </div>
-          )}
-        </div>
-      </div>
+      <ProductViewModal
+        product={{ ...product, name, images, video, price, description: desc, shippingInfo }}
+        onClose={onClose}
+        onAddToCart={product.onAddToCart}
+        inCart={product.inCart}
+      />
     );
   }
 
@@ -3365,9 +3565,28 @@ function ProductModal({ product, isOwner, onClose, onSave, onDelete }) {
         {step === 1 && (
           <div className="wizard-step">
             <div className="field-group">
-              <label className="field-label">صور المنتج</label>
-              <MediaUploader value={image} onChange={setImage} folder="products" height={170} />
+              <label className="field-label">صور المنتج (حتى {MAX_IMAGES} صور)</label>
+              <div className="product-images-grid">
+                {images.map((img, i) => (
+                  <div className="product-image-slot" key={i}>
+                    <img src={img} alt="" />
+                    <button type="button" className="remove-image-btn" onClick={() => removeImageAt(i)}>
+                      <X size={13} />
+                    </button>
+                    {i === 0 && <span className="main-image-tag">الرئيسية</span>}
+                  </div>
+                ))}
+                {images.length < MAX_IMAGES && (
+                  <MediaUploader value="" onChange={addImageSlot} folder="products" height={90} compact />
+                )}
+              </div>
             </div>
+
+            <div className="field-group">
+              <label className="field-label">فيديو المنتج (اختياري)</label>
+              <MediaUploader value={video} onChange={setVideo} folder="products" accept="video/*" height={120} />
+            </div>
+
             <div className="field-group">
               <label className="field-label">اسم المنتج أو الخدمة</label>
               <input className="field-input" value={name} onChange={(e) => setName(e.target.value)} placeholder="مثال: تصميم شعار احترافي" />
@@ -3408,11 +3627,13 @@ function ProductModal({ product, isOwner, onClose, onSave, onDelete }) {
         {step === 4 && (
           <div className="wizard-step wizard-review">
             <div className="review-card">
-              {image && <img src={image} alt="" className="review-image" />}
+              {images[0] && <img src={images[0]} alt="" className="review-image" />}
               <div className="review-body">
                 <h4>{name || "بدون اسم"}</h4>
                 {price && <div className="product-price">{price}</div>}
                 {category && <span className="job-tag" style={{ marginTop: 6 }}>{category}</span>}
+                {images.length > 1 && <p className="review-desc">+{images.length - 1} صور إضافية</p>}
+                {video && <p className="review-desc"><Video size={13} style={{ display: "inline", marginLeft: 4 }} /> يحتوي فيديو</p>}
                 {desc && <p className="review-desc">{desc}</p>}
                 {shippingInfo && <p className="review-desc"><b>الشحن:</b> {shippingInfo}</p>}
               </div>
