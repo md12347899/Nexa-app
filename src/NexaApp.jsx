@@ -1289,6 +1289,7 @@ function NexaStyles() {
       .uploader-hint { font-size: 11.5px; color: var(--ink-soft); margin: 10px 0 6px; }
 
       .compact-box { width: 100%; height: 100%; border-radius: 12px; color: var(--ink-soft); }
+      .compact-progress { display: flex; flex-direction: column; align-items: center; gap: 4px; font-size: 10px; font-weight: 700; }
       .media-uploader.compact { width: 100%; height: 100%; }
 
       /* ---- معرض صور المنتج المتعدد (في المعالج) ---- */
@@ -2613,9 +2614,10 @@ function UserBadge({ user, size = 14, style }) {
 /* ============================================================
    رافع الصور/الفيديو من الجهاز (Supabase Storage)
    ============================================================ */
-function MediaUploader({ value, onChange, folder = "general", accept = "image/*", label, shape = "rect", height = 140, compact = false }) {
+function MediaUploader({ value, onChange, onChangeMultiple, folder = "general", accept = "image/*", label, shape = "rect", height = 140, compact = false, maxFiles = 1 }) {
   const inputRef = useRef(null);
   const [uploading, setUploading] = useState(false);
+  const [progress, setProgress] = useState({ done: 0, total: 0 });
   const [error, setError] = useState("");
   const isVideo = accept.includes("video");
 
@@ -2623,7 +2625,7 @@ function MediaUploader({ value, onChange, folder = "general", accept = "image/*"
     const file = e.target.files?.[0];
     if (!file) return;
     setError("");
-    const maxMb = isVideo ? 50 : 8;
+    const maxMb = isVideo ? 150 : 8;
     if (file.size > maxMb * 1024 * 1024) {
       setError(`حجم الملف كبير جدًا (الحد الأقصى ${maxMb} ميجا)`);
       return;
@@ -2633,19 +2635,62 @@ function MediaUploader({ value, onChange, folder = "general", accept = "image/*"
     setUploading(false);
     if (url) {
       onChange(url);
-      if (compact && inputRef.current) inputRef.current.value = ""; // إعادة تصفير المدخل لاستقبال صورة جديدة فورًا
     } else {
       setError("تعذّر رفع الملف، حاول مجددًا");
     }
   };
 
+  // رفع عدة صور دفعة واحدة (وضع compact مع maxFiles > 1): يرفعها بالتتابع ويبلّغ الأب دفعة واحدة بكل الروابط الناجحة
+  const handleMultipleFiles = async (e) => {
+    const files = Array.from(e.target.files || []).slice(0, maxFiles);
+    if (files.length === 0) return;
+    setError("");
+    const maxMb = 8;
+    const validFiles = files.filter((f) => f.size <= maxMb * 1024 * 1024);
+    if (validFiles.length < files.length) {
+      setError(`بعض الصور تم تجاوزها لأن حجمها أكبر من ${maxMb} ميجا`);
+    }
+    if (validFiles.length === 0) { return; }
+
+    setUploading(true);
+    setProgress({ done: 0, total: validFiles.length });
+    const uploadedUrls = [];
+    for (const file of validFiles) {
+      const url = await uploadMediaFile(file, folder);
+      if (url) uploadedUrls.push(url);
+      setProgress((p) => ({ ...p, done: p.done + 1 }));
+    }
+    setUploading(false);
+    if (uploadedUrls.length > 0) {
+      onChangeMultiple(uploadedUrls);
+    } else {
+      setError("تعذّر رفع الصور، حاول مجددًا");
+    }
+    if (inputRef.current) inputRef.current.value = "";
+  };
+
   if (compact) {
+    const isMultiple = maxFiles > 1 && !isVideo;
     return (
       <div className="media-uploader compact">
         <div className="uploader-box compact-box" style={{ height }} onClick={() => !uploading && inputRef.current?.click()}>
-          {uploading ? <Loader2 size={18} className="nx-spin" /> : <Plus size={20} />}
+          {uploading ? (
+            <div className="compact-progress">
+              <Loader2 size={16} className="nx-spin" />
+              {progress.total > 1 && <span>{progress.done}/{progress.total}</span>}
+            </div>
+          ) : (
+            <Plus size={20} />
+          )}
         </div>
-        <input ref={inputRef} type="file" accept={accept} style={{ display: "none" }} onChange={handleFile} />
+        <input
+          ref={inputRef}
+          type="file"
+          accept={accept}
+          multiple={isMultiple}
+          style={{ display: "none" }}
+          onChange={isMultiple ? handleMultipleFiles : handleFile}
+        />
         {error && <div className="field-error" style={{ fontSize: 11 }}><AlertCircle size={12} /> {error}</div>}
       </div>
     );
@@ -3519,6 +3564,9 @@ function ProductModal({ product, isOwner, onClose, onSave, onDelete }) {
     if (!url) return;
     setImages((imgs) => [...imgs, url].slice(0, MAX_IMAGES));
   };
+  const addMultipleImages = (urls) => {
+    setImages((imgs) => [...imgs, ...urls].slice(0, MAX_IMAGES));
+  };
   const removeImageAt = (idx) => {
     setImages((imgs) => imgs.filter((_, i) => i !== idx));
   };
@@ -3577,7 +3625,15 @@ function ProductModal({ product, isOwner, onClose, onSave, onDelete }) {
                   </div>
                 ))}
                 {images.length < MAX_IMAGES && (
-                  <MediaUploader value="" onChange={addImageSlot} folder="products" height={90} compact />
+                  <MediaUploader
+                    value=""
+                    onChange={addImageSlot}
+                    onChangeMultiple={addMultipleImages}
+                    folder="products"
+                    height={90}
+                    compact
+                    maxFiles={MAX_IMAGES - images.length}
+                  />
                 )}
               </div>
             </div>
