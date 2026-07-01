@@ -1809,6 +1809,15 @@ function NexaStyles() {
       .suspended-tag { background: var(--red); color: #fff; font-size: 9.5px; font-weight: 800; padding: 2px 7px; border-radius: 999px; }
 
       /* ---- المساعد الذكي ---- */
+      .ai-fab {
+        position: fixed; bottom: 84px; left: 18px; z-index: 50;
+        width: 52px; height: 52px; border-radius: 16px; border: none;
+        background: linear-gradient(135deg, #a855f7, #6366f1);
+        color: #fff; display: flex; align-items: center; justify-content: center;
+        box-shadow: 0 4px 16px rgba(139, 92, 246, 0.45);
+        transition: transform .15s, box-shadow .15s;
+      }
+      .ai-fab:active { transform: scale(0.93); }
       .menu-ai-item { color: var(--gold-2); font-weight: 700; }
       .ai-avatar {
         width: 36px; height: 36px; border-radius: 50%; background: linear-gradient(135deg, var(--gold), var(--gold-2));
@@ -2112,9 +2121,6 @@ function AppShell({ currentUser, setCurrentUser, view, viewParam, goTo, onLogout
             <button onClick={() => { goTo("profile"); setMenuOpen(false); }}>
               <User size={16} /> حسابي
             </button>
-            <button onClick={() => { goTo("aiAssistant"); setMenuOpen(false); }} className="menu-ai-item">
-              <Sparkles size={16} /> المساعد الذكي
-            </button>
             {currentUser.username === ADMIN_USERNAME && (
               <button onClick={() => { goTo("adminDashboard"); setMenuOpen(false); }}>
                 <ShieldCheck size={16} /> لوحة تحكم الأدمن
@@ -2203,6 +2209,12 @@ function AppShell({ currentUser, setCurrentUser, view, viewParam, goTo, onLogout
 
       {searchOpen && (
         <SearchModal currentUser={currentUser} goTo={goTo} onClose={() => setSearchOpen(false)} />
+      )}
+
+      {view !== "aiAssistant" && (
+        <button className="ai-fab" onClick={() => goTo("aiAssistant")} title="المساعد الذكي">
+          <Sparkles size={22} />
+        </button>
       )}
     </div>
   );
