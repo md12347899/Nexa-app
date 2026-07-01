@@ -944,6 +944,9 @@ export default function NexaApp() {
 
   // محاولة استرجاع الجلسة محليًا عند الإقلاع
   useEffect(() => {
+    // timeout احتياطي — يُجبر التطبيق على المتابعة بعد 5 ثوانٍ بغض النظر عن أي شيء
+    const safetyTimer = setTimeout(() => setBooting(false), 5000);
+
     (async () => {
       try {
         const localId = localStorage.getItem(LOCAL_SESSION_KEY);
@@ -951,25 +954,31 @@ export default function NexaApp() {
           const u = await dbGet(KEYS.users(localId), true);
           if (u) {
             setCurrentUser(u);
+            clearTimeout(safetyTimer);
             setBooting(false);
             return;
           }
         }
-        // تحقق من وجود جلسة جوجل نشطة (المستخدم رجع من شاشة موافقة جوجل)
-        const session = await getGoogleAuthSession();
+        // تحقق من وجود جلسة جوجل نشطة مع timeout قصير (3 ثوانٍ كحد أقصى)
+        const sessionPromise = getGoogleAuthSession();
+        const timeoutPromise = new Promise((resolve) => setTimeout(() => resolve(null), 3000));
+        const session = await Promise.race([sessionPromise, timeoutPromise]);
+
         if (session?.user) {
           const existingUser = await findUserByAuthId(session.user.id);
           if (existingUser) {
             setCurrentUser(existingUser);
             try { localStorage.setItem(LOCAL_SESSION_KEY, existingUser.id); } catch {}
           } else {
-            // حساب جوجل جديد، يحتاج اختيار اسم مستخدم لإكمال التسجيل
             setGoogleSignupSession(session);
           }
         }
       } catch {}
+      clearTimeout(safetyTimer);
       setBooting(false);
     })();
+
+    return () => clearTimeout(safetyTimer);
   }, []);
 
   // فتح متجر مباشرة عبر رابط مختصر (مثل ?s=username)، إذا كان موجودًا في الرابط
