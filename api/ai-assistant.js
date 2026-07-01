@@ -1,15 +1,15 @@
-// دالة Vercel الوسيطة (Serverless Function) — تستقبل طلبات من التطبيق وتستدعي Gemini API
-// بمفتاح مجاني (بدون بطاقة) مخزّن في متغيرات بيئة Vercel، لا يظهر أبدًا في كود الواجهة.
-//
-// يجب إضافة متغير بيئة اسمه GEMINI_API_KEY في إعدادات المشروع على Vercel
-// (Settings → Environment Variables) قبل أن تعمل هذه الدالة.
-// احصل على المفتاح مجانًا من: https://aistudio.google.com/app/apikey
+// دالة Vercel الوسيطة للذكاء الاصطناعي (Gemini API)
+// احصل على مفتاح مجاني من: https://aistudio.google.com/app/apikey
+// ثم أضفه في Vercel Settings → Environment Variables باسم: GEMINI_API_KEY
 
 export default async function handler(req, res) {
-  if (req.method !== "POST") {
-    res.status(405).json({ error: "Method not allowed" });
-    return;
-  }
+  // السماح بطلبات CORS من التطبيق
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+
+  if (req.method === "OPTIONS") { res.status(200).end(); return; }
+  if (req.method !== "POST") { res.status(405).json({ error: "Method not allowed" }); return; }
 
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) {
@@ -20,25 +20,20 @@ export default async function handler(req, res) {
   try {
     const { contents, systemInstruction, tools } = req.body;
 
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`;
+    const body = { contents: contents || [] };
+    if (systemInstruction) body.systemInstruction = { parts: [{ text: systemInstruction }] };
+    if (tools) body.tools = tools;
 
-    const response = await fetch(url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        contents: contents || [],
-        systemInstruction: systemInstruction ? { parts: [{ text: systemInstruction }] } : undefined,
-        tools: tools || undefined,
-      }),
-    });
+    const response = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`,
+      { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }
+    );
 
     const data = await response.json();
-
     if (!response.ok) {
-      res.status(response.status).json({ error: data.error?.message || "حدث خطأ من خدمة الذكاء الاصطناعي" });
+      res.status(response.status).json({ error: data.error?.message || "خطأ من خدمة Gemini" });
       return;
     }
-
     res.status(200).json(data);
   } catch (e) {
     res.status(500).json({ error: "تعذّر الاتصال بخدمة الذكاء الاصطناعي: " + e.message });
