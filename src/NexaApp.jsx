@@ -680,6 +680,77 @@ async function signOutGoogle() {
   } catch {}
 }
 
+// ---------- المساعد الذكي (Claude) ----------
+const AI_TOOLS = [
+  {
+    function_declarations: [
+      {
+        name: "create_post",
+        description: "ينشر منشورًا نصيًا جديدًا في خلاصة نِكسا باسم المستخدم الحالي.",
+        parameters: {
+          type: "OBJECT",
+          properties: {
+            text: { type: "STRING", description: "نص المنشور الكامل بالعربية، جاهز للنشر." },
+          },
+          required: ["text"],
+        },
+      },
+      {
+        name: "create_product",
+        description: "يضيف منتجًا جديدًا لمتجر المستخدم الحالي، بناءً على اسم ووصف يحدده المستخدم. لا تستخدم هذه الأداة إلا إذا كان عند المستخدم متجر بالفعل.",
+        parameters: {
+          type: "OBJECT",
+          properties: {
+            name: { type: "STRING", description: "اسم المنتج أو الخدمة." },
+            description: { type: "STRING", description: "وصف تسويقي جذاب ومختصر للمنتج بالعربية." },
+            price: { type: "STRING", description: "السعر إن ذكره المستخدم، وإلا اتركه فاضيًا." },
+          },
+          required: ["name", "description"],
+        },
+      },
+      {
+        name: "update_bio",
+        description: "يحدّث النبذة التعريفية (bio) في الملف الشخصي للمستخدم الحالي.",
+        parameters: {
+          type: "OBJECT",
+          properties: {
+            bio: { type: "STRING", description: "نص النبذة الجديد بالعربية، مختصر وجذاب." },
+          },
+          required: ["bio"],
+        },
+      },
+    ],
+  },
+];
+
+const AI_SYSTEM_PROMPT = `أنت "مساعد نِكسا"، مساعد ذكاء اصطناعي مدمج داخل تطبيق نِكسا (منصة اجتماعية وأسواق رقمية باللغة العربية).
+مهمتك مساعدة المستخدم في كتابة منشورات تسويقية جذابة، وصف منتجات، وتنظيم حسابه — وتنفيذ هذه الإجراءات فعليًا عبر الأدوات المتاحة لك عند موافقة المستخدم الصريحة.
+تحدث بالعربية فقط، بأسلوب ودود ومباشر ومختصر. لا تنفّذ أي إجراء (نشر، إضافة منتج، تعديل) إلا إذا طلب المستخدم ذلك بوضوح أو وافق على اقتراحك صريحًا.
+عندما تستخدم أداة، اشرح للمستخدم بعدها بجملة قصيرة ماذا فعلت.`;
+
+async function callAiAssistant(contents, notify) {
+  try {
+    const response = await fetch("/api/ai-assistant", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        systemInstruction: AI_SYSTEM_PROMPT,
+        contents,
+        tools: AI_TOOLS,
+      }),
+    });
+    const data = await response.json();
+    if (!response.ok) {
+      throw new Error(data.error || "خطأ غير معروف");
+    }
+    return data;
+  } catch (e) {
+    console.error("callAiAssistant failed", e);
+    if (notify) notify("تعذّر التواصل مع المساعد الذكي: " + e.message, "error");
+    return null;
+  }
+}
+
 // ---------- الرسائل الخاصة ----------
 function conversationId(userIdA, userIdB) {
   return [userIdA, userIdB].sort().join("__");
@@ -1737,6 +1808,17 @@ function NexaStyles() {
       .admin-action-btn.danger { background: #FBE8E6; color: var(--red); }
       .suspended-tag { background: var(--red); color: #fff; font-size: 9.5px; font-weight: 800; padding: 2px 7px; border-radius: 999px; }
 
+      /* ---- المساعد الذكي ---- */
+      .menu-ai-item { color: var(--gold-2); font-weight: 700; }
+      .ai-avatar {
+        width: 36px; height: 36px; border-radius: 50%; background: linear-gradient(135deg, var(--gold), var(--gold-2));
+        color: #fff; display: flex; align-items: center; justify-content: center; flex-shrink: 0;
+      }
+      .ai-assistant-page .chat-header { background: linear-gradient(135deg, #FFF8EA, #fff); }
+      .ai-messages { background: linear-gradient(180deg, #FFFBF2, var(--paper)); }
+      .ai-bubble.mine { background: var(--teal); }
+      .ai-bubble:not(.mine) { background: #fff; border-color: #F0E2C0; }
+
       @media (max-width: 380px) {
         .shop-grid, .products-grid { grid-template-columns: 1fr 1fr; gap: 9px; }
       }
@@ -2030,6 +2112,9 @@ function AppShell({ currentUser, setCurrentUser, view, viewParam, goTo, onLogout
             <button onClick={() => { goTo("profile"); setMenuOpen(false); }}>
               <User size={16} /> حسابي
             </button>
+            <button onClick={() => { goTo("aiAssistant"); setMenuOpen(false); }} className="menu-ai-item">
+              <Sparkles size={16} /> المساعد الذكي
+            </button>
             {currentUser.username === ADMIN_USERNAME && (
               <button onClick={() => { goTo("adminDashboard"); setMenuOpen(false); }}>
                 <ShieldCheck size={16} /> لوحة تحكم الأدمن
@@ -2090,6 +2175,7 @@ function AppShell({ currentUser, setCurrentUser, view, viewParam, goTo, onLogout
         )}
         {view === "support" && <SupportView goTo={goTo} />}
         {view === "settings" && <SettingsView currentUser={currentUser} setCurrentUser={setCurrentUser} goTo={goTo} notify={notify} onLogout={onLogout} />}
+        {view === "aiAssistant" && <AiAssistantView currentUser={currentUser} goTo={goTo} notify={notify} />}
         {view === "adminDashboard" && currentUser.username === ADMIN_USERNAME && (
           <AdminDashboardView currentUser={currentUser} goTo={goTo} notify={notify} />
         )}
@@ -5603,6 +5689,155 @@ function GoogleSignupCompleteScreen({ session, onComplete, onCancel, notify }) {
         </button>
         <button className="btn-ghost" onClick={onCancel} style={{ marginTop: 10 }}>
           إلغاء
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/* ============================================================
+   صفحة المساعد الذكي
+   ============================================================ */
+function AiAssistantView({ currentUser, goTo, notify }) {
+  const [messages, setMessages] = useState([
+    { role: "assistant", content: `أهلًا ${currentUser.fullName.split(" ")[0]}! 👋 أنا مساعدك الذكي في نِكسا. أقدر أساعدك تكتب منشورًا، تضيف منتجًا لمتجرك، أو تنظّم ملفك الشخصي. جرّب تطلب مني شي، مثل: "اكتب لي منشور عن عرض خصم 20% على منتجاتي".` },
+  ]);
+  const [input, setInput] = useState("");
+  const [busy, setBusy] = useState(false);
+  const scrollRef = useRef(null);
+
+  useEffect(() => {
+    scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
+  }, [messages]);
+
+  const executeTool = async (toolName, args) => {
+    if (toolName === "create_post") {
+      const id = uid("post");
+      const newPost = {
+        id, authorId: currentUser.id, type: "text", text: args.text,
+        mediaUrl: "", productName: "", price: "", likes: [], comments: [], pinned: false, createdAt: Date.now(),
+      };
+      const result = await dbSet(KEYS.post(id), newPost, true);
+      if (result) {
+        const idx = (await dbGet(KEYS.posts, true)) || [];
+        idx.push(id);
+        await dbSet(KEYS.posts, idx, true);
+        return "تم نشر المنشور بنجاح في خلاصتك ✅";
+      }
+      return "حدث خطأ، تعذّر نشر المنشور.";
+    }
+
+    if (toolName === "create_product") {
+      const shop = await dbGet(KEYS.shop(currentUser.id), true);
+      if (!shop) {
+        return "لا يوجد لديك متجر بعد، يجب إنشاء متجر أولًا من صفحة المتاجر قبل إضافة منتجات.";
+      }
+      const newProduct = {
+        id: uid("prod"), name: args.name, description: args.description,
+        price: args.price || "", images: [], image: "", video: "",
+        category: "", shippingInfo: "", views: 0, createdAt: Date.now(),
+      };
+      const updatedShop = { ...shop, products: [...(shop.products || []), newProduct] };
+      const result = await dbSet(KEYS.shop(currentUser.id), updatedShop, true);
+      return result ? `تم إضافة "${args.name}" لمتجرك بنجاح ✅` : "حدث خطأ، تعذّر إضافة المنتج.";
+    }
+
+    if (toolName === "update_bio") {
+      const updated = { ...currentUser, bio: args.bio };
+      const result = await dbSet(KEYS.users(currentUser.id), updated, true);
+      return result ? "تم تحديث نبذتك التعريفية ✅" : "حدث خطأ، تعذّر التحديث.";
+    }
+
+    return "أداة غير معروفة.";
+  };
+
+  const send = async () => {
+    if (!input.trim() || busy) return;
+    const userText = input.trim();
+    setMessages((m) => [...m, { role: "user", content: userText }]);
+    setInput("");
+    setBusy(true);
+
+    // تحويل تاريخ المحادثة المعروض (نص فقط) لصيغة Gemini الأولية
+    let apiContents = [...messages, { role: "user", content: userText }]
+      .filter((m) => typeof m.content === "string")
+      .map((m) => ({ role: m.role === "assistant" ? "model" : "user", parts: [{ text: m.content }] }));
+
+    let finalReplyText = "";
+    let loopGuard = 0;
+
+    while (loopGuard < 4) {
+      loopGuard++;
+      const data = await callAiAssistant(apiContents, notify);
+      if (!data) { setBusy(false); return; }
+
+      const candidate = data.candidates?.[0];
+      const parts = candidate?.content?.parts || [];
+      const functionCalls = parts.filter((p) => p.functionCall);
+      const textParts = parts.filter((p) => p.text).map((p) => p.text).join("\n");
+
+      if (functionCalls.length === 0) {
+        finalReplyText = textParts;
+        break;
+      }
+
+      // تنفيذ كل الأدوات المطلوبة فعليًا، ثم إعادة الطلب للذكاء الاصطناعي بنتيجة التنفيذ
+      apiContents.push({ role: "model", parts });
+      const functionResponseParts = [];
+      for (const fc of functionCalls) {
+        const resultText = await executeTool(fc.functionCall.name, fc.functionCall.args);
+        functionResponseParts.push({
+          functionResponse: { name: fc.functionCall.name, response: { result: resultText } },
+        });
+      }
+      apiContents.push({ role: "user", parts: functionResponseParts });
+
+      if (textParts) finalReplyText = textParts; // نحتفظ بأي نص وسيط في حال توقفنا بسبب loopGuard
+    }
+
+    setMessages((m) => [...m, { role: "assistant", content: finalReplyText || "تم تنفيذ طلبك." }]);
+    setBusy(false);
+  };
+
+  return (
+    <div className="chat-page ai-assistant-page">
+      <div className="chat-header">
+        <button className="back-btn" onClick={() => goTo("feed")}><ChevronRight size={20} /></button>
+        <div className="chat-header-user">
+          <div className="ai-avatar"><Sparkles size={18} /></div>
+          <div>
+            <div className="chat-header-name">مساعد نِكسا الذكي</div>
+            <div className="chat-header-username">يساعدك في حسابك ومتجرك</div>
+          </div>
+        </div>
+      </div>
+
+      <div className="chat-messages ai-messages" ref={scrollRef}>
+        {messages.map((m, i) => (
+          <div key={i} className={`chat-bubble-row ${m.role === "user" ? "mine" : ""}`}>
+            <div className={`chat-bubble ai-bubble ${m.role === "user" ? "mine" : ""}`}>
+              <p style={{ whiteSpace: "pre-wrap" }}>{m.content}</p>
+            </div>
+          </div>
+        ))}
+        {busy && (
+          <div className="chat-bubble-row">
+            <div className="chat-bubble ai-bubble"><Loader2 size={16} className="nx-spin" /></div>
+          </div>
+        )}
+      </div>
+
+      <div className="chat-input-bar">
+        <input
+          className="chat-text-input"
+          placeholder="اكتب طلبك للمساعد..."
+          value={input}
+          onChange={(e) => setInput(e.target.value)}
+          onKeyDown={(e) => e.key === "Enter" && send()}
+          disabled={busy}
+        />
+        <button className="icon-btn-solid" onClick={send} disabled={busy || !input.trim()}>
+          {busy ? <Loader2 size={16} className="nx-spin" /> : <Send size={16} />}
         </button>
       </div>
     </div>
